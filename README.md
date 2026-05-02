@@ -47,6 +47,39 @@ Slice 3 — aws-bootstrap:
   config from env, ensures every resource, second run is a clean no-op.
   Region is forced to `eu-central-1`.
 
+Slice 4 — credential-syncer (macOS only):
+
+- [`lib/credential-syncer.sh`](lib/credential-syncer.sh) — reads the
+  `Claude Code-credentials` entry from the macOS Keychain and uploads it to
+  the SSM SecureString at `/ralph/claude-oauth-credential` (overridable via
+  `RALPH_CLAUDE_OAUTH_SSM_KEY`), encrypted under `alias/ralph`.
+- [`bin/sync-credential.sh`](bin/sync-credential.sh) — thin CLI wrapper.
+  Region is forced to `eu-central-1`. The credential is passed to `aws` via
+  `--cli-input-json file://...` (mode 0600, removed on exit) so it is never
+  visible on any process's argv, and is never echoed in info or error output.
+
+Run after every desktop `claude /login`:
+
+```sh
+./bin/sync-credential.sh
+# or with a custom key:
+RALPH_CLAUDE_OAUTH_SSM_KEY=/ralph/claude-oauth-credential ./bin/sync-credential.sh
+```
+
+Caveats:
+
+- **Rotation:** every desktop `claude /login` may invalidate the prior
+  refresh token. Re-run `bin/sync-credential.sh` immediately after each
+  login so the EC2 worker picks up the fresh credential.
+- **Concurrent use unverified:** simultaneous use of the same credential by
+  the desktop app and an EC2 worker has not been validated; assume one
+  active consumer at a time.
+- **Plan limits:** the EC2 worker burns the engineer's Claude plan limits
+  while running.
+- **OAuth-vs-API-key:** iteration 1 ships OAuth-via-Keychain. Switching to a
+  long-lived API key is a one-file change in the future `ec2-bootstrap`
+  module (see issue #7).
+
 [`tests/`](tests/) holds bats-core tests with yaml fixtures and stubbed
 `gh` and `aws` binaries on `PATH`.
 
@@ -59,6 +92,9 @@ Slice 3 — aws-bootstrap:
 
 # Bootstrap AWS resources for a target repo (idempotent):
 RALPH_TARGET_REPO=owner/target ./bin/bootstrap-aws.sh
+
+# Sync the macOS Keychain credential into SSM (re-run after every claude /login):
+./bin/sync-credential.sh
 
 # Run the test suite:
 bats tests/

@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+#
+# Test stub for the macOS `security` CLI. Records every invocation to
+# $SECURITY_STUB_LOG (one block per call, one arg per line) and emits canned
+# stdout / exit code controlled by env vars:
+#
+#   SECURITY_STUB_OUT    stdout to emit
+#   SECURITY_STUB_EXIT   exit code (default 0)
+
+if [[ -n "${SECURITY_STUB_LOG:-}" ]]; then
+    {
+        printf '=== security call ===\n'
+        printf 'argc=%s\n' "$#"
+        for a in "$@"; do
+            printf 'arg=%s\n' "$a"
+        done
+    } >> "$SECURITY_STUB_LOG"
+fi
+
+if [[ -n "${SECURITY_STUB_OUT:-}" ]]; then
+    printf '%s' "$SECURITY_STUB_OUT"
+fi
+
+exit "${SECURITY_STUB_EXIT:-0}"
