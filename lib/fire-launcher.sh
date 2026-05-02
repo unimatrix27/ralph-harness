@@ -139,26 +139,61 @@ fire::__user_data_files() {
     printf '%s\n' "${here}/cloud-init/bootstrap.sh"
 }
 
+# fire::__prompt_files
+#
+# Emits one path per line for prompt templates that should be embedded
+# as on-disk files in the rendered user-data. Slice 7 ships the
+# discovery prompt; slices 8/9 add implementation + review.
+fire::__prompt_files() {
+    local here
+    here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    printf '%s\n' "${here}/prompts/discovery.md"
+}
+
+# fire::__embed_prompt <abs-prompt-path>
+#
+# Emits a heredoc snippet that, when run on the EC2 worker, materializes
+# the prompt template at /opt/ralph/prompts/<basename>. Using a
+# quoted-EOF heredoc preserves the file verbatim — no shell interpolation,
+# no substitution. The orchestrator picks the file up via
+# RALPH_DISCOVERY_PROMPT (set in the env shim).
+fire::__embed_prompt() {
+    local path="${1:?prompt path required}"
+    local base="${path##*/}"
+    local sentinel
+    sentinel="RALPH_PROMPT_EOF_$(printf '%s' "$base" | tr -c '[:alnum:]' _)"
+    printf '\n# ---- embedded prompt %s ----\n' "$base"
+    printf 'install -d -m 755 /opt/ralph/prompts\n'
+    printf "cat > /opt/ralph/prompts/%s <<'%s'\n" "$base" "$sentinel"
+    cat "$path"
+    printf '\n%s\n' "$sentinel"
+    printf 'chmod 644 /opt/ralph/prompts/%s\n' "$base"
+}
+
 # fire::__render_user_data <log-group>
 #
 # Emits a complete cloud-init script: one shebang at the top, a small
-# env shim exporting the five RALPH_* runtime knobs the payload reads,
-# then the bundled lib files concatenated with their leading shebangs
-# stripped. The last file in the bundle (cloud-init/bootstrap.sh)
-# contains the entry call.
+# env shim exporting the runtime knobs the payload reads, the embedded
+# prompt templates written to /opt/ralph/prompts/, then the bundled lib
+# files concatenated with their leading shebangs stripped. The last file
+# in the bundle (cloud-init/bootstrap.sh) contains the entry call.
 fire::__render_user_data() {
     local log_group="${1:?log_group required}"
     local target_repo="${RALPH_TARGET_REPO:-}"
     local github_key="${FIRE_GITHUB_TOKEN_SSM_KEY}"
     local oauth_key="${FIRE_CLAUDE_OAUTH_SSM_KEY}"
 
-    local files
+    local files prompts
     if ! mapfile -t files < <(fire::__user_data_files); then
         fire::__err "could not resolve user-data files"
         return 2
     fi
+    if ! mapfile -t prompts < <(fire::__prompt_files); then
+        fire::__err "could not resolve prompt files"
+        return 2
+    fi
     local f
-    for f in "${files[@]}"; do
+    for f in "${files[@]}" "${prompts[@]}"; do
         if [[ ! -f "$f" ]]; then
             fire::__err "user-data file not found: ${f}"
             return 2
@@ -172,6 +207,10 @@ fire::__render_user_data() {
         printf 'export RALPH_AWS_REGION=%q\n'            "$FIRE_REGION"
         printf 'export RALPH_GITHUB_TOKEN_SSM_KEY=%q\n'  "$github_key"
         printf 'export RALPH_CLAUDE_OAUTH_SSM_KEY=%q\n'  "$oauth_key"
+        printf 'export RALPH_DISCOVERY_PROMPT=%q\n'      "/opt/ralph/prompts/discovery.md"
+        for f in "${prompts[@]}"; do
+            fire::__embed_prompt "$f"
+        done
         for f in "${files[@]}"; do
             printf '\n# ---- bundled %s ----\n' "${f##*/}"
             sed '1{/^#!/d;}' "$f"

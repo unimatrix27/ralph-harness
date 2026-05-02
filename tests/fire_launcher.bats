@@ -134,9 +134,9 @@ setup() {
 @test "render_user_data: includes phase markers + EXIT trap + shutdown" {
     local out
     out=$(fire::__render_user_data "/ralph/main")
-    [[ "$out" == *'PHASE_START phase=ready'* ]]
-    [[ "$out" == *'PHASE_END phase=ready'* ]]
-    [[ "$out" == *'OUTCOME=ready'* ]]
+    [[ "$out" == *'PHASE_START phase=discovery'* ]]
+    [[ "$out" == *'PHASE_END phase=discovery'* ]]
+    [[ "$out" == *'OUTCOME='* ]]
     [[ "$out" == *'trap boot__shutdown_now EXIT'* ]]
     [[ "$out" == *'shutdown -h now'* ]]
     [[ "$out" == *'/ralph/main'* ]]
@@ -180,6 +180,15 @@ setup() {
     [[ "$out" == *'tcs::validate'* ]]
     [[ "$out" == *'orch::run'* ]]
     [[ "$out" == *'boot__main'* ]]
+}
+
+@test "render_user_data: embeds the discovery prompt and points the orchestrator at it" {
+    local out
+    out=$(fire::__render_user_data "/ralph/main")
+    [[ "$out" == *'export RALPH_DISCOVERY_PROMPT='*'/opt/ralph/prompts/discovery.md'* ]]
+    [[ "$out" == *'/opt/ralph/prompts/discovery.md'* ]]
+    [[ "$out" == *'ralph-harness — discovery call'* ]]
+    [[ "$out" == *'{{RALPH_TARGET_REPO}}'* ]]
 }
 
 @test "render_user_data: installs the documented OS deps" {

@@ -60,6 +60,44 @@ Slice 5 — fire-launcher (single-fire EC2 + CloudWatch streaming):
   launcher force-`terminate-instances` and exits non-zero.
 - [`bin/fire.sh`](bin/fire.sh) — single-shot launcher CLI.
 
+Slice 7 — discovery call:
+
+- [`prompts/discovery.md`](prompts/discovery.md) — generic discovery
+  prompt template. Target context (repo, default branch, work dir,
+  build/test commands, branch prefix, optional `prompt_extensions.discovery`)
+  is injected via `{{...}}` placeholders at render time; the template
+  itself contains zero target-specific identifiers.
+- [`lib/ec2-orchestrator.sh`](lib/ec2-orchestrator.sh) — `orch::run`
+  now fires the real discovery call: renders the template, invokes
+  `claude --print` (with `--permission-mode bypassPermissions` by
+  default; override via `RALPH_CLAUDE_FLAGS`), wraps the call in
+  `PHASE_START phase=discovery` / `PHASE_END phase=discovery duration_s=...`
+  markers, and verifies the four output files exist before branching.
+  Each invocation is a fresh claude session (`memory` MCP excluded by
+  slice 6's MCP set).
+- The discovery call writes four files under `$RALPH_OUT_DIR`
+  (default `/tmp/ralph/`):
+  - `decision.json` — `status` (`PICKED` | `NONE` | `ALL_BLOCKED`),
+    picked issue number, reasoning.
+  - `issue.json` — full `gh issue view --json ...` payload of the
+    picked issue (or `{}` for non-PICKED).
+  - `crafted-prompt.md` — implementation prompt for slice 8, with
+    target conventions surfaced from the target's `CLAUDE.md`,
+    `AGENTS.md`, `CONTEXT.md`, and any `docs/adr/*` files.
+  - `milestone-log.json` — `{milestone, log_issue}` pointing at the
+    `[log] <milestone>` issue (find-or-create) for cross-iteration
+    learnings.
+- Bash branches on `decision.json.status`: `NONE` → `OUTCOME=no_work`,
+  `ALL_BLOCKED` → `OUTCOME=all_blocked`, `PICKED` → `OUTCOME=picked issue=<n>`
+  (slices 8/9 plug in here). Any other status, missing output file,
+  or invalid JSON aborts with exit 3 — the EC2 instance still
+  terminates via the cloud-init EXIT trap.
+- The launcher embeds `prompts/discovery.md` into the rendered
+  user-data via a quoted heredoc and exports
+  `RALPH_DISCOVERY_PROMPT=/opt/ralph/prompts/discovery.md`, so the
+  prompt template ships alongside the lib bundle without a network
+  fetch.
+
 Slice 6 — ec2-bootstrap (deps, secrets, fresh clone, hello orchestrator):
 
 - [`lib/cloud-init/bootstrap.sh`](lib/cloud-init/bootstrap.sh) — slice 6's
@@ -79,11 +117,10 @@ Slice 6 — ec2-bootstrap (deps, secrets, fresh clone, hello orchestrator):
   `tcs::validate`. Hands off to `orch::run`. Ships stdout to CloudWatch
   (`/ralph/main`, stream-per-instance) and runs `shutdown -h now` via a
   bash `trap EXIT` so the box terminates on any exit (success or failure).
-- [`lib/ec2-orchestrator.sh`](lib/ec2-orchestrator.sh) — sourceable shell
-  module defining `orch::run`. Slice 6 is a stub: emits
-  `PHASE_START phase=ready`, `PHASE_END phase=ready`, `OUTCOME=ready` and
-  returns. Slices 7–9 replace it with the discovery / implementation /
-  review calls.
+- `lib/ec2-orchestrator.sh` — sourceable shell module defining
+  `orch::run`. Slice 6 shipped a stub; slice 7 replaces it with the
+  real discovery call (see above). Slices 8/9 plug in implementation
+  and review after the `PICKED` branch.
 - The launcher renders one self-contained user-data script by
   concatenating `lib/target-config-schema.sh`, `lib/ec2-orchestrator.sh`,
   and `lib/cloud-init/bootstrap.sh` after a small env shim that exports
