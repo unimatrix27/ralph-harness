@@ -1,0 +1,6 @@
+build_cmd: "make build"
+test_cmd: "make test"
+branch_prefix: "ralph"
+review_bot:
+  username: "claude"
+  source: "comment"
