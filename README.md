@@ -60,6 +60,47 @@ Slice 5 — fire-launcher (single-fire EC2 + CloudWatch streaming):
   launcher force-`terminate-instances` and exits non-zero.
 - [`bin/fire.sh`](bin/fire.sh) — single-shot launcher CLI.
 
+Slice 8 — implementation call:
+
+- [`prompts/implementation.md`](prompts/implementation.md) — generic
+  implementation prompt template. Target context (repo, default branch,
+  work dir, build/test commands, branch prefix, agent-stuck label,
+  per-launch tag, optional `prompt_extensions.implementation`) is
+  injected via `{{...}}` placeholders at render time; the template
+  itself contains zero target-specific identifiers.
+- `lib/ec2-orchestrator.sh` — `orch::run` now chains the implementation
+  call onto the `PICKED` branch from discovery: renders
+  `prompts/implementation.md`, appends the crafted context discovery
+  wrote to `/tmp/ralph/crafted-prompt.md`, invokes `claude --print`,
+  wraps the call in `PHASE_START phase=implementation` /
+  `PHASE_END phase=implementation duration_s=... issue=<n> status=...`
+  markers (status comes from the result file so a CloudWatch grep
+  yields a one-line per-iteration summary), and verifies the result
+  file before branching.
+- The implementation call writes `/tmp/ralph/impl-result.json` with one
+  of two shapes:
+  - `{"status":"PR_OPENED","issue":<n>,"pr_number":<m>,"pr_url":...,"branch":...}`
+  - `{"status":"AGENT_STUCK","issue":<n>,"reason":"..."}`
+- Bash branches on `impl-result.json.status`: `PR_OPENED` →
+  `OUTCOME=pr_opened issue=<n> pr=<m>`; `AGENT_STUCK` →
+  `OUTCOME=agent_stuck issue=<n>`. Any other status, missing output,
+  or invalid JSON aborts with exit 3 — the EC2 instance still
+  terminates via the cloud-init EXIT trap.
+- The PR body carries an HTML-comment marker
+  `<!-- ralph-launch: <RALPH_LAUNCH_TAG> -->` (defaults to the EC2
+  instance id, set in `lib/cloud-init/bootstrap.sh`). Slice 9's
+  launcher post-hoc check uses this to correlate when the EC2 was
+  hard-killed before recording state.
+- `agent-stuck` escape: the prompt instructs the impl call to
+  self-stop when ANY of (>3 build/test fix iterations on the same
+  failure surface) OR (>15 file edits without a green build) OR
+  (self-judged futility) hits. On stuck: the source issue gets the
+  `agent_stuck_label` label (default `agent-stuck`), no PR is opened,
+  and `impl-result.json` records `status=AGENT_STUCK`.
+- The launcher embeds `prompts/implementation.md` into the rendered
+  user-data alongside the discovery prompt and exports
+  `RALPH_IMPLEMENTATION_PROMPT=/opt/ralph/prompts/implementation.md`.
+
 Slice 7 — discovery call:
 
 - [`prompts/discovery.md`](prompts/discovery.md) — generic discovery

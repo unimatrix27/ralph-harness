@@ -4,17 +4,28 @@
 # and writes canned files into $RALPH_OUT_DIR before exiting with
 # $CLAUDE_STUB_EXIT (default 0).
 #
+# Detects which call this is by reading stdin and looking for the
+# discovery vs implementation marker line in the rendered prompt:
+#
+#   "ralph-harness — discovery call"      -> writes the four discovery
+#                                            output files
+#   "ralph-harness — implementation call" -> writes impl-result.json
+#
+# Anything else falls through to discovery defaults.
+#
 # The stub honours these env vars:
 #
 #   CLAUDE_STUB_DECISION_JSON      decision.json contents
 #   CLAUDE_STUB_ISSUE_JSON         issue.json contents (default: "{}")
 #   CLAUDE_STUB_CRAFTED_PROMPT     crafted-prompt.md contents (default: "")
 #   CLAUDE_STUB_MILESTONE_LOG      milestone-log.json contents (default: "{}")
+#   CLAUDE_STUB_IMPL_RESULT_JSON   impl-result.json contents
 #   CLAUDE_STUB_SKIP_FILE          if set to a basename, that one file is
 #                                  NOT written (used to test the missing-
 #                                  output contract violation path)
 #   CLAUDE_STUB_EXIT               exit code (default 0)
-#   CLAUDE_STUB_STDIN_CAPTURE      if set, copies stdin to that path
+#   CLAUDE_STUB_STDIN_CAPTURE      if set, appends stdin to that path with
+#                                  a per-invocation boundary marker
 #
 # Other env reads:
 #   RALPH_OUT_DIR                  required; where to drop the files
@@ -29,10 +40,13 @@ if [[ -n "${CLAUDE_STUB_LOG:-}" ]]; then
     } >> "$CLAUDE_STUB_LOG"
 fi
 
+stdin_content=$(cat)
+
 if [[ -n "${CLAUDE_STUB_STDIN_CAPTURE:-}" ]]; then
-    cat > "$CLAUDE_STUB_STDIN_CAPTURE"
-else
-    cat >/dev/null
+    {
+        printf '%s' "$stdin_content"
+        printf '\n--CLAUDE_STUB_INVOCATION_BOUNDARY--\n'
+    } >> "$CLAUDE_STUB_STDIN_CAPTURE"
 fi
 
 out="${RALPH_OUT_DIR:?RALPH_OUT_DIR required}"
@@ -46,14 +60,19 @@ write_unless_skipped() {
     printf '%s' "$content" > "${out}/${name}"
 }
 
-: "${CLAUDE_STUB_DECISION_JSON:=$'{"status":"NONE","reasoning":"stub"}'}"
-: "${CLAUDE_STUB_ISSUE_JSON:=$'{}'}"
-: "${CLAUDE_STUB_CRAFTED_PROMPT:=stub crafted prompt}"
-: "${CLAUDE_STUB_MILESTONE_LOG:=$'{}'}"
+if [[ "$stdin_content" == *"ralph-harness — implementation call"* ]]; then
+    : "${CLAUDE_STUB_IMPL_RESULT_JSON:=$'{"status":"PR_OPENED","issue":1,"pr_number":2,"pr_url":"https://github.com/owner/target/pull/2","branch":"ralph/1-stub"}'}"
+    write_unless_skipped impl-result.json "$CLAUDE_STUB_IMPL_RESULT_JSON"
+else
+    : "${CLAUDE_STUB_DECISION_JSON:=$'{"status":"NONE","reasoning":"stub"}'}"
+    : "${CLAUDE_STUB_ISSUE_JSON:=$'{}'}"
+    : "${CLAUDE_STUB_CRAFTED_PROMPT:=stub crafted prompt}"
+    : "${CLAUDE_STUB_MILESTONE_LOG:=$'{}'}"
 
-write_unless_skipped decision.json      "$CLAUDE_STUB_DECISION_JSON"
-write_unless_skipped issue.json         "$CLAUDE_STUB_ISSUE_JSON"
-write_unless_skipped crafted-prompt.md  "$CLAUDE_STUB_CRAFTED_PROMPT"
-write_unless_skipped milestone-log.json "$CLAUDE_STUB_MILESTONE_LOG"
+    write_unless_skipped decision.json      "$CLAUDE_STUB_DECISION_JSON"
+    write_unless_skipped issue.json         "$CLAUDE_STUB_ISSUE_JSON"
+    write_unless_skipped crafted-prompt.md  "$CLAUDE_STUB_CRAFTED_PROMPT"
+    write_unless_skipped milestone-log.json "$CLAUDE_STUB_MILESTONE_LOG"
+fi
 
 exit "${CLAUDE_STUB_EXIT:-0}"

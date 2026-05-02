@@ -142,12 +142,13 @@ fire::__user_data_files() {
 # fire::__prompt_files
 #
 # Emits one path per line for prompt templates that should be embedded
-# as on-disk files in the rendered user-data. Slice 7 ships the
-# discovery prompt; slices 8/9 add implementation + review.
+# as on-disk files in the rendered user-data. Slice 7 shipped discovery;
+# slice 8 adds implementation; slice 9 will add review.
 fire::__prompt_files() {
     local here
     here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
     printf '%s\n' "${here}/prompts/discovery.md"
+    printf '%s\n' "${here}/prompts/implementation.md"
 }
 
 # fire::__embed_prompt <abs-prompt-path>
@@ -208,6 +209,7 @@ fire::__render_user_data() {
         printf 'export RALPH_GITHUB_TOKEN_SSM_KEY=%q\n'  "$github_key"
         printf 'export RALPH_CLAUDE_OAUTH_SSM_KEY=%q\n'  "$oauth_key"
         printf 'export RALPH_DISCOVERY_PROMPT=%q\n'      "/opt/ralph/prompts/discovery.md"
+        printf 'export RALPH_IMPLEMENTATION_PROMPT=%q\n'  "/opt/ralph/prompts/implementation.md"
         for f in "${prompts[@]}"; do
             fire::__embed_prompt "$f"
         done
