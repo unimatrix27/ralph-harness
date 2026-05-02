@@ -47,6 +47,34 @@ Slice 3 — aws-bootstrap:
   config from env, ensures every resource, second run is a clean no-op.
   Region is forced to `eu-central-1`.
 
+Slice 5 — fire-launcher (single-fire EC2 + CloudWatch streaming):
+
+- [`lib/fire-launcher.sh`](lib/fire-launcher.sh) — fires one throwaway EC2
+  in `eu-central-1` (`t3a.large`, 30 GB gp3, AL2023 from public SSM AMI
+  parameter, default-VPC public subnet, auto-assigned public IP, IMDSv2
+  required) using the bootstrapped IAM instance profile and security group.
+  Tags every instance + volume `Project=ralph` plus a UTC `LaunchedAt`
+  timestamp and `MaxLifetimeMin`. Launches with
+  `--instance-initiated-shutdown-behavior terminate`, then polls
+  `describe-instances` until `terminated`. On the 75-minute ceiling the
+  launcher force-`terminate-instances` and exits non-zero.
+- [`lib/cloud-init/hello.sh`](lib/cloud-init/hello.sh) — slice 5's
+  hello-world cloud-init payload. Emits `PHASE_START` / `PHASE_END` /
+  `OUTCOME=hello`, ships the run's stdout to CloudWatch
+  (`/ralph/main`, stream-per-instance), and runs `shutdown -h now` via a
+  bash `trap EXIT` so the box terminates on any exit (success or failure).
+  No SSH; SSM Session Manager is the only debug entry point.
+- [`bin/fire.sh`](bin/fire.sh) — single-shot launcher CLI.
+
+```sh
+# Fire one EC2 (slice 5 hello payload):
+RALPH_TARGET_REPO=owner/target ./bin/fire.sh
+
+# Tail the per-instance CloudWatch stream:
+aws --region eu-central-1 logs tail /ralph/main \
+    --log-stream-names <i-...> --follow
+```
+
 Slice 4 — credential-syncer (macOS only):
 
 - [`lib/credential-syncer.sh`](lib/credential-syncer.sh) — reads the
@@ -95,6 +123,9 @@ RALPH_TARGET_REPO=owner/target ./bin/bootstrap-aws.sh
 
 # Sync the macOS Keychain credential into SSM (re-run after every claude /login):
 ./bin/sync-credential.sh
+
+# Fire one throwaway EC2 instance (slice 5 hello payload):
+./bin/fire.sh
 
 # Run the test suite:
 bats tests/
