@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+#
+# Test stub for `claude`. Records every invocation to $CLAUDE_STUB_LOG
+# and writes canned files into $RALPH_OUT_DIR before exiting with
+# $CLAUDE_STUB_EXIT (default 0).
+#
+# The stub honours these env vars:
+#
+#   CLAUDE_STUB_DECISION_JSON      decision.json contents
+#   CLAUDE_STUB_ISSUE_JSON         issue.json contents (default: "{}")
+#   CLAUDE_STUB_CRAFTED_PROMPT     crafted-prompt.md contents (default: "")
+#   CLAUDE_STUB_MILESTONE_LOG      milestone-log.json contents (default: "{}")
+#   CLAUDE_STUB_SKIP_FILE          if set to a basename, that one file is
+#                                  NOT written (used to test the missing-
+#                                  output contract violation path)
+#   CLAUDE_STUB_EXIT               exit code (default 0)
+#   CLAUDE_STUB_STDIN_CAPTURE      if set, copies stdin to that path
+#
+# Other env reads:
+#   RALPH_OUT_DIR                  required; where to drop the files
+
+if [[ -n "${CLAUDE_STUB_LOG:-}" ]]; then
+    {
+        printf '=== claude call ===\n'
+        printf 'argc=%s\n' "$#"
+        for a in "$@"; do
+            printf 'arg=%s\n' "$a"
+        done
+    } >> "$CLAUDE_STUB_LOG"
+fi
+
+if [[ -n "${CLAUDE_STUB_STDIN_CAPTURE:-}" ]]; then
+    cat > "$CLAUDE_STUB_STDIN_CAPTURE"
+else
+    cat >/dev/null
+fi
+
+out="${RALPH_OUT_DIR:?RALPH_OUT_DIR required}"
+mkdir -p "$out"
+
+write_unless_skipped() {
+    local name="$1" content="$2"
+    if [[ "${CLAUDE_STUB_SKIP_FILE:-}" == "$name" ]]; then
+        return 0
+    fi
+    printf '%s' "$content" > "${out}/${name}"
+}
+
+: "${CLAUDE_STUB_DECISION_JSON:=$'{"status":"NONE","reasoning":"stub"}'}"
+: "${CLAUDE_STUB_ISSUE_JSON:=$'{}'}"
+: "${CLAUDE_STUB_CRAFTED_PROMPT:=stub crafted prompt}"
+: "${CLAUDE_STUB_MILESTONE_LOG:=$'{}'}"
+
+write_unless_skipped decision.json      "$CLAUDE_STUB_DECISION_JSON"
+write_unless_skipped issue.json         "$CLAUDE_STUB_ISSUE_JSON"
+write_unless_skipped crafted-prompt.md  "$CLAUDE_STUB_CRAFTED_PROMPT"
+write_unless_skipped milestone-log.json "$CLAUDE_STUB_MILESTONE_LOG"
+
+exit "${CLAUDE_STUB_EXIT:-0}"

@@ -1,26 +1,31 @@
 # shellcheck shell=bash
 #
 # fire-launcher.sh — fires one throwaway EC2 instance per iteration and
-# enforces the wall-clock backstop from the laptop side. Slice 5 ships a
-# hello-world cloud-init payload (no orchestrator yet) — just enough to
-# prove launch + tagging + IAM + instance-initiated-shutdown + log
-# streaming + the 75-min ceiling all work end-to-end.
+# enforces the wall-clock backstop from the laptop side. Slice 6 swaps
+# the slice-5 hello payload for the real ec2-bootstrap: install deps,
+# fetch SSM secrets, fresh-clone the target, validate .ralph/config.yaml,
+# then hand off to a stub orchestrator that emits OUTCOME=ready.
 #
 # Public surface:
 #   fire::run
 #
+# Reads from env (required):
+#   RALPH_TARGET_REPO        owner/repo of the target
+#
 # Reads from env (with overridable defaults):
-#   RALPH_AWS_REGION         eu-central-1
-#   RALPH_LOG_GROUP          /ralph/main
-#   RALPH_INSTANCE_TYPE      t3a.large
-#   RALPH_ROOT_VOLUME_GB     30
-#   RALPH_SG_NAME            ralph-sg                    (created by aws-bootstrap)
-#   RALPH_IAM_PROFILE        ralph-ec2-profile           (created by aws-bootstrap)
-#   RALPH_AMI_SSM_PARAM      /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
-#   RALPH_MAX_LIFETIME_MIN   75
-#   RALPH_POLL_INTERVAL_SEC  20
-#   FIRE_USER_DATA_FILE      override path to cloud-init payload
-#                            (default: <this-dir>/cloud-init/hello.sh)
+#   RALPH_AWS_REGION              eu-central-1
+#   RALPH_LOG_GROUP               /ralph/main
+#   RALPH_GITHUB_TOKEN_SSM_KEY    /ralph/github-pat
+#   RALPH_CLAUDE_OAUTH_SSM_KEY    /ralph/claude-oauth-credential
+#   RALPH_INSTANCE_TYPE           t3a.large
+#   RALPH_ROOT_VOLUME_GB          30
+#   RALPH_SG_NAME                 ralph-sg               (from aws-bootstrap)
+#   RALPH_IAM_PROFILE             ralph-ec2-profile      (from aws-bootstrap)
+#   RALPH_AMI_SSM_PARAM           /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+#   RALPH_MAX_LIFETIME_MIN        75
+#   RALPH_POLL_INTERVAL_SEC       20
+#   FIRE_USER_DATA_FILE           override; if set, used verbatim as the
+#                                 sole cloud-init payload (no lib bundling)
 #
 # Exit codes:
 #   0   instance terminated cleanly within the ceiling
@@ -45,6 +50,8 @@
 
 FIRE_REGION="${RALPH_AWS_REGION:-eu-central-1}"
 FIRE_LOG_GROUP="${RALPH_LOG_GROUP:-/ralph/main}"
+FIRE_GITHUB_TOKEN_SSM_KEY="${RALPH_GITHUB_TOKEN_SSM_KEY:-/ralph/github-pat}"
+FIRE_CLAUDE_OAUTH_SSM_KEY="${RALPH_CLAUDE_OAUTH_SSM_KEY:-/ralph/claude-oauth-credential}"
 FIRE_INSTANCE_TYPE="${RALPH_INSTANCE_TYPE:-t3a.large}"
 FIRE_ROOT_VOLUME_GB="${RALPH_ROOT_VOLUME_GB:-30}"
 FIRE_SG_NAME="${RALPH_SG_NAME:-ralph-sg}"
@@ -113,33 +120,101 @@ fire::__resolve_image_id() {
     printf '%s' "$image_id"
 }
 
-fire::__user_data_file() {
+# fire::__user_data_files
+#
+# Emits one path per line, in the order they should be concatenated into
+# the rendered user-data. By default returns the slice-6 bundle:
+# target-config-schema.sh + ec2-orchestrator.sh + cloud-init/bootstrap.sh.
+# An FIRE_USER_DATA_FILE override replaces the entire bundle with one
+# self-contained file (used by integration smoke tests).
+fire::__user_data_files() {
     if [[ -n "${FIRE_USER_DATA_FILE:-}" ]]; then
-        printf '%s' "$FIRE_USER_DATA_FILE"
+        printf '%s\n' "$FIRE_USER_DATA_FILE"
         return 0
     fi
     local here
     here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    printf '%s' "${here}/cloud-init/hello.sh"
+    printf '%s\n' "${here}/target-config-schema.sh"
+    printf '%s\n' "${here}/ec2-orchestrator.sh"
+    printf '%s\n' "${here}/cloud-init/bootstrap.sh"
+}
+
+# fire::__prompt_files
+#
+# Emits one path per line for prompt templates that should be embedded
+# as on-disk files in the rendered user-data. Slice 7 ships the
+# discovery prompt; slices 8/9 add implementation + review.
+fire::__prompt_files() {
+    local here
+    here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    printf '%s\n' "${here}/prompts/discovery.md"
+}
+
+# fire::__embed_prompt <abs-prompt-path>
+#
+# Emits a heredoc snippet that, when run on the EC2 worker, materializes
+# the prompt template at /opt/ralph/prompts/<basename>. Using a
+# quoted-EOF heredoc preserves the file verbatim — no shell interpolation,
+# no substitution. The orchestrator picks the file up via
+# RALPH_DISCOVERY_PROMPT (set in the env shim).
+fire::__embed_prompt() {
+    local path="${1:?prompt path required}"
+    local base="${path##*/}"
+    local sentinel
+    sentinel="RALPH_PROMPT_EOF_$(printf '%s' "$base" | tr -c '[:alnum:]' _)"
+    printf '\n# ---- embedded prompt %s ----\n' "$base"
+    printf 'install -d -m 755 /opt/ralph/prompts\n'
+    printf "cat > /opt/ralph/prompts/%s <<'%s'\n" "$base" "$sentinel"
+    cat "$path"
+    printf '\n%s\n' "$sentinel"
+    printf 'chmod 644 /opt/ralph/prompts/%s\n' "$base"
 }
 
 # fire::__render_user_data <log-group>
 #
-# Emits a complete cloud-init script: a single shebang, a small env shim
-# exporting the runtime values the payload reads, then the hello payload
-# (with its own leading shebang stripped).
+# Emits a complete cloud-init script: one shebang at the top, a small
+# env shim exporting the runtime knobs the payload reads, the embedded
+# prompt templates written to /opt/ralph/prompts/, then the bundled lib
+# files concatenated with their leading shebangs stripped. The last file
+# in the bundle (cloud-init/bootstrap.sh) contains the entry call.
 fire::__render_user_data() {
     local log_group="${1:?log_group required}"
-    local file
-    file=$(fire::__user_data_file)
-    if [[ ! -f "$file" ]]; then
-        fire::__err "user-data file not found: ${file}"
+    local target_repo="${RALPH_TARGET_REPO:-}"
+    local github_key="${FIRE_GITHUB_TOKEN_SSM_KEY}"
+    local oauth_key="${FIRE_CLAUDE_OAUTH_SSM_KEY}"
+
+    local files prompts
+    if ! mapfile -t files < <(fire::__user_data_files); then
+        fire::__err "could not resolve user-data files"
         return 2
     fi
+    if ! mapfile -t prompts < <(fire::__prompt_files); then
+        fire::__err "could not resolve prompt files"
+        return 2
+    fi
+    local f
+    for f in "${files[@]}" "${prompts[@]}"; do
+        if [[ ! -f "$f" ]]; then
+            fire::__err "user-data file not found: ${f}"
+            return 2
+        fi
+    done
+
     {
         printf '#!/bin/bash\n'
-        printf 'export LOG_GROUP_NAME=%q\n' "$log_group"
-        sed '1{/^#!/d;}' "$file"
+        printf 'export RALPH_LOG_GROUP=%q\n'             "$log_group"
+        printf 'export RALPH_TARGET_REPO=%q\n'           "$target_repo"
+        printf 'export RALPH_AWS_REGION=%q\n'            "$FIRE_REGION"
+        printf 'export RALPH_GITHUB_TOKEN_SSM_KEY=%q\n'  "$github_key"
+        printf 'export RALPH_CLAUDE_OAUTH_SSM_KEY=%q\n'  "$oauth_key"
+        printf 'export RALPH_DISCOVERY_PROMPT=%q\n'      "/opt/ralph/prompts/discovery.md"
+        for f in "${prompts[@]}"; do
+            fire::__embed_prompt "$f"
+        done
+        for f in "${files[@]}"; do
+            printf '\n# ---- bundled %s ----\n' "${f##*/}"
+            sed '1{/^#!/d;}' "$f"
+        done
     }
 }
 
@@ -234,6 +309,11 @@ fire::__wait_for_terminated() {
 }
 
 fire::run() {
+    if [[ -z "${RALPH_TARGET_REPO:-}" ]]; then
+        fire::__err "RALPH_TARGET_REPO is required (e.g. owner/repo)"
+        return 2
+    fi
+
     local vpc_id subnet_id sg_id image_id
     vpc_id=$(fire::__resolve_default_vpc) || return $?
     subnet_id=$(fire::__resolve_public_subnet "$vpc_id") || return $?
@@ -242,6 +322,8 @@ fire::run() {
 
     fire::__info "region=${FIRE_REGION} vpc=${vpc_id} subnet=${subnet_id} sg=${sg_id} ami=${image_id}"
     fire::__info "instance_type=${FIRE_INSTANCE_TYPE} root_gb=${FIRE_ROOT_VOLUME_GB} max_lifetime_min=${FIRE_MAX_LIFETIME_MIN}"
+    fire::__info "target=${RALPH_TARGET_REPO} log_group=${FIRE_LOG_GROUP}"
+    fire::__info "github_key=${FIRE_GITHUB_TOKEN_SSM_KEY} oauth_key=${FIRE_CLAUDE_OAUTH_SSM_KEY}"
 
     local tmp
     tmp=$(mktemp -d -t ralph-fire) || return $?
