@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+#
+# Test stub for `gh`. Records every invocation to $GH_STUB_LOG (one block
+# per call, one arg per line) and emits canned stdout / exit code controlled
+# by env vars keyed on the first two positional args.
+#
+# Keys are uppercased and joined with `_`, e.g. `gh issue view ...` reads:
+#   GH_STUB_OUT_ISSUE_VIEW    — stdout to emit
+#   GH_STUB_EXIT_ISSUE_VIEW   — exit code (default 0)
+#
+# Calls with fewer than two args fall back to GH_STUB_OUT / GH_STUB_EXIT.
+
+if [[ -n "${GH_STUB_LOG:-}" ]]; then
+    {
+        printf '=== gh call ===\n'
+        printf 'argc=%s\n' "$#"
+        for a in "$@"; do
+            printf 'arg=%s\n' "$a"
+        done
+    } >> "$GH_STUB_LOG"
+fi
+
+key=""
+if (( $# >= 2 )); then
+    key=$(printf '%s_%s' "$1" "$2" | tr '[:lower:]-' '[:upper:]_')
+fi
+
+out_var="GH_STUB_OUT_${key:-DEFAULT}"
+exit_var="GH_STUB_EXIT_${key:-DEFAULT}"
+
+if [[ -n "${!out_var:-}" ]]; then
+    printf '%s\n' "${!out_var}"
+elif [[ -n "${GH_STUB_OUT:-}" ]]; then
+    printf '%s\n' "$GH_STUB_OUT"
+fi
+
+exit "${!exit_var:-${GH_STUB_EXIT:-0}}"
