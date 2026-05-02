@@ -58,16 +58,42 @@ Slice 5 — fire-launcher (single-fire EC2 + CloudWatch streaming):
   `--instance-initiated-shutdown-behavior terminate`, then polls
   `describe-instances` until `terminated`. On the 75-minute ceiling the
   launcher force-`terminate-instances` and exits non-zero.
-- [`lib/cloud-init/hello.sh`](lib/cloud-init/hello.sh) — slice 5's
-  hello-world cloud-init payload. Emits `PHASE_START` / `PHASE_END` /
-  `OUTCOME=hello`, ships the run's stdout to CloudWatch
-  (`/ralph/main`, stream-per-instance), and runs `shutdown -h now` via a
-  bash `trap EXIT` so the box terminates on any exit (success or failure).
-  No SSH; SSM Session Manager is the only debug entry point.
 - [`bin/fire.sh`](bin/fire.sh) — single-shot launcher CLI.
 
+Slice 6 — ec2-bootstrap (deps, secrets, fresh clone, hello orchestrator):
+
+- [`lib/cloud-init/bootstrap.sh`](lib/cloud-init/bootstrap.sh) — slice 6's
+  cloud-init payload. Runs once on first boot. Installs OS dependencies
+  (Node 20, .NET 10 SDK via `dotnet-install.sh`, `gh`, Docker, `uv`,
+  `claude` CLI, plus `git`, `jq`, and `yq`). Configures the five MCPs the
+  harness uses (`serena`, `morph-mcp`, `context7`, `github`,
+  `sequential-thinking`); the `memory` MCP is intentionally NOT added so
+  every iteration starts with fresh context. Fetches the GitHub PAT and
+  the Claude OAuth credential from SSM SecureString
+  (`/ralph/github-pat`, `/ralph/claude-oauth-credential`) into mode-0600
+  files at their consumer's expected on-disk locations; never echoes the
+  values. Clones the target repo fresh on its resolved default branch
+  (`gh repo view --json defaultBranchRef`, no `main`/`master` assumption).
+  Runs safety guards (on default branch, clean working tree, origin
+  matches `RALPH_TARGET_REPO`). Validates `.ralph/config.yaml` via
+  `tcs::validate`. Hands off to `orch::run`. Ships stdout to CloudWatch
+  (`/ralph/main`, stream-per-instance) and runs `shutdown -h now` via a
+  bash `trap EXIT` so the box terminates on any exit (success or failure).
+- [`lib/ec2-orchestrator.sh`](lib/ec2-orchestrator.sh) — sourceable shell
+  module defining `orch::run`. Slice 6 is a stub: emits
+  `PHASE_START phase=ready`, `PHASE_END phase=ready`, `OUTCOME=ready` and
+  returns. Slices 7–9 replace it with the discovery / implementation /
+  review calls.
+- The launcher renders one self-contained user-data script by
+  concatenating `lib/target-config-schema.sh`, `lib/ec2-orchestrator.sh`,
+  and `lib/cloud-init/bootstrap.sh` after a small env shim that exports
+  the five required runtime knobs (`RALPH_TARGET_REPO`,
+  `RALPH_AWS_REGION`, `RALPH_GITHUB_TOKEN_SSM_KEY`,
+  `RALPH_CLAUDE_OAUTH_SSM_KEY`, `RALPH_LOG_GROUP`). No SSH at any layer;
+  SSM Session Manager is the only debug entry point.
+
 ```sh
-# Fire one EC2 (slice 5 hello payload):
+# Fire one EC2 (slice 6 ec2-bootstrap, stub orchestrator):
 RALPH_TARGET_REPO=owner/target ./bin/fire.sh
 
 # Tail the per-instance CloudWatch stream:
@@ -124,8 +150,8 @@ RALPH_TARGET_REPO=owner/target ./bin/bootstrap-aws.sh
 # Sync the macOS Keychain credential into SSM (re-run after every claude /login):
 ./bin/sync-credential.sh
 
-# Fire one throwaway EC2 instance (slice 5 hello payload):
-./bin/fire.sh
+# Fire one throwaway EC2 instance (slice 6 ec2-bootstrap, stub orchestrator):
+RALPH_TARGET_REPO=owner/target ./bin/fire.sh
 
 # Run the test suite:
 bats tests/

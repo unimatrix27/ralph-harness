@@ -20,6 +20,10 @@ setup() {
     : > "$AWS_STUB_LOG"
     export AWS_STUB_LOG
 
+    # Slice 6 requires RALPH_TARGET_REPO. Tests that exercise the missing
+    # case unset it locally.
+    export RALPH_TARGET_REPO="owner/target"
+
     # Defaults: every resource discovery succeeds, run-instances returns an
     # id, describe-instances reports terminated on the first poll. Tests
     # override individual env vars to drive failure paths.
@@ -130,10 +134,10 @@ setup() {
 @test "render_user_data: includes phase markers + EXIT trap + shutdown" {
     local out
     out=$(fire::__render_user_data "/ralph/main")
-    [[ "$out" == *'PHASE_START'* ]]
-    [[ "$out" == *'PHASE_END'* ]]
-    [[ "$out" == *'OUTCOME=hello'* ]]
-    [[ "$out" == *'trap'*'EXIT'* ]]
+    [[ "$out" == *'PHASE_START phase=ready'* ]]
+    [[ "$out" == *'PHASE_END phase=ready'* ]]
+    [[ "$out" == *'OUTCOME=ready'* ]]
+    [[ "$out" == *'trap boot__shutdown_now EXIT'* ]]
     [[ "$out" == *'shutdown -h now'* ]]
     [[ "$out" == *'/ralph/main'* ]]
 }
@@ -151,14 +155,91 @@ setup() {
     [[ "$out" == *'/some/other-group'* ]]
 }
 
-@test "render_user_data: cloud-init does not need ssh, jq, or static creds" {
+@test "render_user_data: never carries an ANTHROPIC_API_KEY or ssh key" {
     local out
     out=$(fire::__render_user_data "/ralph/main")
     ! [[ "$out" == *'ANTHROPIC_API_KEY'* ]]
     ! [[ "$out" == *'authorized_keys'* ]]
 }
 
+@test "render_user_data: exports all five required RALPH_* env vars" {
+    local out
+    RALPH_GITHUB_TOKEN_SSM_KEY=/ralph/github-pat \
+    RALPH_CLAUDE_OAUTH_SSM_KEY=/ralph/claude-oauth-credential \
+        out=$(fire::__render_user_data "/ralph/main")
+    [[ "$out" == *'export RALPH_LOG_GROUP='*'/ralph/main'* ]]
+    [[ "$out" == *'export RALPH_TARGET_REPO='*'owner/target'* ]]
+    [[ "$out" == *'export RALPH_AWS_REGION='*'eu-central-1'* ]]
+    [[ "$out" == *'export RALPH_GITHUB_TOKEN_SSM_KEY='*'/ralph/github-pat'* ]]
+    [[ "$out" == *'export RALPH_CLAUDE_OAUTH_SSM_KEY='*'/ralph/claude-oauth-credential'* ]]
+}
+
+@test "render_user_data: bundles target-config-schema and ec2-orchestrator" {
+    local out
+    out=$(fire::__render_user_data "/ralph/main")
+    [[ "$out" == *'tcs::validate'* ]]
+    [[ "$out" == *'orch::run'* ]]
+    [[ "$out" == *'boot__main'* ]]
+}
+
+@test "render_user_data: installs the documented OS deps" {
+    local out
+    out=$(fire::__render_user_data "/ralph/main")
+    [[ "$out" == *'nodejs20'* ]]
+    [[ "$out" == *'dotnet-install.sh'* ]]
+    [[ "$out" == *'install gh'* ]]
+    [[ "$out" == *'install docker'* ]]
+    [[ "$out" == *'astral.sh/uv'* ]]
+    [[ "$out" == *'@anthropic-ai/claude-code'* ]]
+}
+
+@test "render_user_data: declares the five required MCPs and excludes memory" {
+    local out
+    out=$(fire::__render_user_data "/ralph/main")
+    [[ "$out" == *'claude mcp add serena'* ]]
+    [[ "$out" == *'claude mcp add morph-mcp'* ]]
+    [[ "$out" == *'claude mcp add context7'* ]]
+    [[ "$out" == *'claude mcp add github'* ]]
+    [[ "$out" == *'claude mcp add sequential-thinking'* ]]
+    ! [[ "$out" == *'claude mcp add memory'* ]]
+}
+
+@test "render_user_data: fetches both SSM SecureStrings with decryption" {
+    local out
+    out=$(fire::__render_user_data "/ralph/main")
+    [[ "$out" == *'ssm get-parameter'* ]]
+    [[ "$out" == *'--with-decryption'* ]]
+    [[ "$out" == *'RALPH_GITHUB_TOKEN_SSM_KEY'* ]]
+    [[ "$out" == *'RALPH_CLAUDE_OAUTH_SSM_KEY'* ]]
+}
+
+@test "render_user_data: clones target on the resolved default branch" {
+    local out
+    out=$(fire::__render_user_data "/ralph/main")
+    [[ "$out" == *'gh repo view'* ]]
+    [[ "$out" == *'defaultBranchRef'* ]]
+    [[ "$out" == *'git clone'* ]]
+    # No hardcoded main/master assumption.
+    ! [[ "$out" == *'--branch main '* ]]
+    ! [[ "$out" == *'--branch master '* ]]
+}
+
+@test "render_user_data: validates .ralph/config.yaml via tcs::validate" {
+    local out
+    out=$(fire::__render_user_data "/ralph/main")
+    [[ "$out" == *'.ralph/config.yaml'* ]]
+    [[ "$out" == *'tcs::validate'* ]]
+}
+
 # ---- pre-flight failures ----
+
+@test "run: refuses when RALPH_TARGET_REPO is unset" {
+    unset RALPH_TARGET_REPO
+    run fire::run
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"RALPH_TARGET_REPO"* ]]
+    ! grep -q '^arg=run-instances$' "$AWS_STUB_LOG"
+}
 
 @test "run: refuses when no default VPC" {
     export AWS_STUB_OUT_EC2_DESCRIBE_VPCS="None"
