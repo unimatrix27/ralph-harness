@@ -36,8 +36,19 @@ Slice 2 — github-state-mutator:
   `find_or_create_milestone_log_issue`, `append_caveman_log`.
 - [`bin/gsm`](bin/gsm) — CLI for manual verification against a sandbox repo.
 
-[`tests/`](tests/) holds bats-core tests with yaml fixtures and a stubbed
-`gh` binary on `PATH` for the github-state-mutator suite.
+Slice 3 — aws-bootstrap:
+
+- [`lib/aws-bootstrap.sh`](lib/aws-bootstrap.sh) — idempotent `awsbs::ensure_*`
+  functions for every AWS-side resource the harness needs (KMS alias `alias/ralph`,
+  SSM SecureString placeholders, EC2 IAM role + instance profile with
+  minimum-scope inline policy, security group in the default VPC, CloudWatch
+  log group) plus the target-side `agent-stuck` label.
+- [`bin/bootstrap-aws.sh`](bin/bootstrap-aws.sh) — single-shot CLI: reads
+  config from env, ensures every resource, second run is a clean no-op.
+  Region is forced to `eu-central-1`.
+
+[`tests/`](tests/) holds bats-core tests with yaml fixtures and stubbed
+`gh` and `aws` binaries on `PATH`.
 
 ```sh
 # Validate a config file by hand:
@@ -46,12 +57,15 @@ Slice 2 — github-state-mutator:
 # Manually swap a label on a sandbox repo:
 ./bin/gsm swap-label owner/sandbox 1 ready-for-agent ready-for-human
 
+# Bootstrap AWS resources for a target repo (idempotent):
+RALPH_TARGET_REPO=owner/target ./bin/bootstrap-aws.sh
+
 # Run the test suite:
 bats tests/
 ```
 
-Dependencies: `yq` (mikefarah/yq v4), `jq`, `gh`, and `bats-core`. See
-[`CONTRIBUTING.md`](CONTRIBUTING.md) for install hints.
+Dependencies: `yq` (mikefarah/yq v4), `jq`, `gh`, `aws` (CLI v2), and
+`bats-core`. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for install hints.
 
 ## Schema at a glance
 

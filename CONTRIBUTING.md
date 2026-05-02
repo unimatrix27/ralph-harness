@@ -39,12 +39,13 @@ tests/fixtures/      yaml fixtures for the tests
 - [`yq`](https://github.com/mikefarah/yq) v4 (the Go binary by mikefarah)
 - `jq` (used by `gh --jq` in the github-state-mutator module)
 - `gh` (GitHub CLI, authenticated for any target repo you mutate manually)
+- `aws` CLI v2 (only needed for `bin/bootstrap-aws.sh`; tests use a stub)
 - [`bats-core`](https://github.com/bats-core/bats-core) for tests
 
 On macOS:
 
 ```sh
-brew install yq jq gh bats-core
+brew install yq jq gh bats-core awscli
 ```
 
 On Debian/Ubuntu:
@@ -52,6 +53,7 @@ On Debian/Ubuntu:
 ```sh
 sudo apt-get install bats jq gh
 # yq via the Go release tarball or `snap install yq`
+# awscli v2 via the official installer at https://aws.amazon.com/cli/
 ```
 
 ## Running the tests
