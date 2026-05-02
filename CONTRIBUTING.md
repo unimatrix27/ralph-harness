@@ -37,18 +37,20 @@ tests/fixtures/      yaml fixtures for the tests
 
 - `bash` 4+ (or recent macOS bash; the modules assume `[[`-style conditionals)
 - [`yq`](https://github.com/mikefarah/yq) v4 (the Go binary by mikefarah)
+- `jq` (used by `gh --jq` in the github-state-mutator module)
+- `gh` (GitHub CLI, authenticated for any target repo you mutate manually)
 - [`bats-core`](https://github.com/bats-core/bats-core) for tests
 
 On macOS:
 
 ```sh
-brew install yq bats-core
+brew install yq jq gh bats-core
 ```
 
 On Debian/Ubuntu:
 
 ```sh
-sudo apt-get install bats
+sudo apt-get install bats jq gh
 # yq via the Go release tarball or `snap install yq`
 ```
 
