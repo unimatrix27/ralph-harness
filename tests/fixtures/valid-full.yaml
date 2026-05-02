@@ -1,0 +1,14 @@
+build_cmd: "./scripts/build.sh"
+test_cmd: "./scripts/test.sh"
+branch_prefix: "ralph"
+review_bot:
+  username: "claude"
+  source: "comment"
+agent_stuck_label: "agent-stuck"
+prompt_extensions:
+  discovery: |
+    Prefer issues tagged priority:high.
+  implementation: |
+    Follow the conventions documented in CONTEXT.md.
+  review: |
+    Address every blocking comment; ignore nits.
