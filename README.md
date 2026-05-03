@@ -9,6 +9,62 @@ Generic. Target repo + target-specific config supplied at runtime.
 Status: iteration 1, in progress (single-fire from laptop). See issue #1 for
 the PRD and the open issues for the slice plan.
 
+## Out of scope (iteration 1)
+
+Iteration 1 is single-fire-from-laptop and intentionally minimal. The
+following are deferred to later iterations:
+
+- **Iteration 2 — management EC2.** A long-lived management box that
+  schedules `fire.sh` itself on a cron so the laptop stops being in the
+  loop. Reuses the slice 5 launcher and the slice 6 cloud-init module
+  unchanged.
+- **Iteration 2 — Lambda janitor.** Out-of-band sweeper that
+  force-terminates any `Project=ralph` EC2 still running past
+  `MaxLifetimeMin`, defending against a launcher process killed before its
+  ceiling fires.
+- **Iteration 3 — custom AMI.** Bake the dependency install (Node, .NET,
+  `gh`, Docker, `uv`, `claude`, `jq`, `yq`) so cold-start drops from minutes
+  to seconds. Iteration 1 installs at boot via `dotnet-install.sh` etc.
+- **Iteration 3 — spot + ARM (`t4g`).** Iteration 1 fires
+  `t3a.large` on-demand for predictability under the wall-clock backstop.
+- **Iteration 3 — multi-target dispatch.** One run, one target. Routing
+  across multiple target repos is deferred.
+- **Iteration 3 — observability dashboard.** Iteration 1 ships
+  per-instance CloudWatch streams plus the milestone-log GitHub issue
+  (caveman-format). A grafana/CW-dashboard view is later.
+
+## Architecture: iteration-2-extensible
+
+The slice 5 launcher (`lib/fire-launcher.sh`) and slice 6 cloud-init module
+(`lib/cloud-init/bootstrap.sh`) are written so the iteration-2 management
+EC2 can call `fire::run` exactly the way the laptop does today. No core
+script needs a rewrite to move the trigger off the laptop — the management
+box just needs the same env (`RALPH_TARGET_REPO`, IAM permissions for the
+launcher) and a cron entry. See [`docs/smoke-test.md`](docs/smoke-test.md)
+for the manual end-to-end runbook iteration 2 will automate.
+
+## OAuth-vs-API-key migration footnote
+
+Iteration 1 ships **OAuth-via-Keychain**. The EC2 worker authenticates to
+Claude using the OAuth credential synced from the operator's macOS Keychain
+into SSM (slice 4). Switching to a long-lived **API key** is a one-file
+change in `lib/cloud-init/bootstrap.sh` (the `boot__fetch_secrets` step):
+swap the SSM key, drop the credential file at the API-key consumer's
+expected location instead. No other module changes. Tracked as iteration-2
+work in issue #7.
+
+OAuth caveats that apply today (and will go away if you migrate to an API
+key):
+
+- **Plan limits.** The EC2 worker burns the engineer's Claude plan limits
+  on every run.
+- **Rotation.** Each desktop `claude /login` may invalidate the prior
+  refresh token. Re-run `bin/sync-credential.sh` immediately after every
+  login, or the worker will fail at the first `claude --print` call.
+- **Concurrent use unverified.** Simultaneous use of the same OAuth
+  credential by the desktop app and an EC2 worker is not validated.
+  Assume one active consumer at a time.
+
 ## Public-safe
 
 This repository contains zero target-specific identifiers. Every target knob is
@@ -17,6 +73,14 @@ environment variables / SSM. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the
 contract.
 
 ## What's here today
+
+Slice 10 — end-to-end smoke-test runbook (HITL):
+
+- [`docs/smoke-test.md`](docs/smoke-test.md) — operator-driven runbook
+  that exercises the full chain on a fresh AWS account: `bootstrap-aws` →
+  `sync-credential` → seed PAT → `fire` → tail CloudWatch → verify PR →
+  verify cleanup. Acceptance signal is "every phase reached `PHASE_END`
+  and the instance is `terminated`."
 
 Slice 1 — target-config-schema:
 
