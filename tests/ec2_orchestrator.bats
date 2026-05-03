@@ -44,13 +44,27 @@ setup() {
     # substitutions populate one explicitly.
     unset RALPH_CONFIG
 
+    # Skip the slice-9 review sleep (default 600s) in tests.
+    export RALPH_REVIEW_WAIT_SEC=0
+
+    # gh stub for the review path's gsm::append_caveman_log call.
+    cp "${BATS_TEST_DIRNAME}/stubs/gh" "${STUB_BIN}/gh"
+    chmod +x "${STUB_BIN}/gh"
+    GH_STUB_LOG="${BATS_TEST_TMPDIR}/gh.log"
+    : > "$GH_STUB_LOG"
+    export GH_STUB_LOG
+
     # shellcheck source=../lib/ec2-orchestrator.sh
     source "${ROOT}/lib/ec2-orchestrator.sh"
+    # Source gsm so orch::__append_caveman_log can call it. On the EC2
+    # worker the bundle does the same; tests source it here directly.
+    # shellcheck source=../lib/github-state-mutator.sh
+    source "${ROOT}/lib/github-state-mutator.sh"
 }
 
 # ---- happy path: PICKED → impl PR_OPENED -----------------------------------
 
-@test "PICKED → impl PR_OPENED: both phase markers, OUTCOME=pr_opened, exits 0" {
+@test "PICKED → impl PR_OPENED: all three phase markers, PICKED_ISSUE marker, OUTCOME=pr_opened review=none, exits 0" {
     export CLAUDE_STUB_DECISION_JSON='{"status":"PICKED","issue":42,"reasoning":"highest priority"}'
     export CLAUDE_STUB_IMPL_RESULT_JSON='{"status":"PR_OPENED","issue":42,"pr_number":7,"pr_url":"https://github.com/owner/target/pull/7","branch":"ralph/42-x"}'
     run orch::run
@@ -59,9 +73,12 @@ setup() {
     [[ "$output" == *"PHASE_END phase=discovery duration_s="* ]]
     [[ "$output" == *"PHASE_START phase=implementation"* ]]
     [[ "$output" == *"PHASE_END phase=implementation duration_s="* ]]
+    [[ "$output" == *"PHASE_START phase=review"* ]]
+    [[ "$output" == *"PHASE_END phase=review duration_s="* ]]
+    [[ "$output" == *"PICKED_ISSUE=42"* ]]
     [[ "$output" == *"issue=42"* ]]
     [[ "$output" == *"status=PR_OPENED"* ]]
-    [[ "$output" == *"OUTCOME=pr_opened issue=42 pr=7"* ]]
+    [[ "$output" == *"OUTCOME=pr_opened issue=42 pr=7 review=none"* ]]
 }
 
 @test "PICKED → impl AGENT_STUCK: OUTCOME=agent_stuck, exits 0" {
@@ -334,4 +351,142 @@ YAML
     run orch::run
     [ "$status" -eq 0 ]
     grep -q 'agent-stuck' "$CLAUDE_STUB_STDIN_CAPTURE"
+}
+
+# ---- review call (slice 9) -------------------------------------------------
+
+@test "review NO_REVIEW: no caveman log call, OUTCOME=pr_opened review=none, exits 0" {
+    export CLAUDE_STUB_DECISION_JSON='{"status":"PICKED","issue":42,"reasoning":"x"}'
+    export CLAUDE_STUB_IMPL_RESULT_JSON='{"status":"PR_OPENED","issue":42,"pr_number":7,"pr_url":"x","branch":"ralph/42-x"}'
+    export CLAUDE_STUB_MILESTONE_LOG='{"milestone":"m1","log_issue":99}'
+    export CLAUDE_STUB_REVIEW_RESULT_JSON='{"status":"NO_REVIEW","reason":"no comments from claude in window"}'
+    run orch::run
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PHASE_END phase=review"* ]]
+    [[ "$output" == *"status=NO_REVIEW"* ]]
+    [[ "$output" == *"OUTCOME=pr_opened issue=42 pr=7 review=none"* ]]
+    # No gh issue comment call should happen on NO_REVIEW.
+    ! grep -q '^arg=comment$' "$GH_STUB_LOG" 2>/dev/null
+}
+
+@test "review REVISION_APPLIED: append_caveman_log called via gh comment, OUTCOME=pr_opened review=revised" {
+    export CLAUDE_STUB_DECISION_JSON='{"status":"PICKED","issue":42,"reasoning":"x"}'
+    export CLAUDE_STUB_IMPL_RESULT_JSON='{"status":"PR_OPENED","issue":42,"pr_number":7,"pr_url":"x","branch":"ralph/42-x"}'
+    export CLAUDE_STUB_MILESTONE_LOG='{"milestone":"m1","log_issue":99}'
+    export CLAUDE_STUB_REVIEW_RESULT_JSON='{"status":"REVISION_APPLIED","issue":42,"pr_number":7,"summary":"addressed claude feedback","gotcha":"flaky test"}'
+    run orch::run
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PHASE_END phase=review"* ]]
+    [[ "$output" == *"status=REVISION_APPLIED"* ]]
+    [[ "$output" == *"OUTCOME=pr_opened issue=42 pr=7 review=revised"* ]]
+    # gsm::append_caveman_log shells out to `gh issue comment 99 ...`
+    grep -q '^arg=comment$' "$GH_STUB_LOG"
+    grep -q '^arg=99$' "$GH_STUB_LOG"
+    grep -q 'addressed claude feedback' "$GH_STUB_LOG"
+}
+
+@test "review REVISION_APPLIED with null log_issue: no caveman log call, still OUTCOME review=revised" {
+    export CLAUDE_STUB_DECISION_JSON='{"status":"PICKED","issue":42,"reasoning":"x"}'
+    export CLAUDE_STUB_IMPL_RESULT_JSON='{"status":"PR_OPENED","issue":42,"pr_number":7,"pr_url":"x","branch":"ralph/42-x"}'
+    export CLAUDE_STUB_MILESTONE_LOG='{"milestone":"","log_issue":null}'
+    export CLAUDE_STUB_REVIEW_RESULT_JSON='{"status":"REVISION_APPLIED","issue":42,"pr_number":7,"summary":"x","gotcha":""}'
+    run orch::run
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"OUTCOME=pr_opened issue=42 pr=7 review=revised"* ]]
+    ! grep -q '^arg=comment$' "$GH_STUB_LOG" 2>/dev/null
+}
+
+@test "review missing review-result.json: returns 3" {
+    export CLAUDE_STUB_DECISION_JSON='{"status":"PICKED","issue":42,"reasoning":"x"}'
+    export CLAUDE_STUB_IMPL_RESULT_JSON='{"status":"PR_OPENED","issue":42,"pr_number":7,"pr_url":"x","branch":"ralph/42-x"}'
+    export CLAUDE_STUB_SKIP_FILE="review-result.json"
+    run orch::run
+    [ "$status" -eq 3 ]
+    [[ "$output" == *"review-result.json"* ]]
+}
+
+@test "review invalid JSON: returns 3" {
+    export CLAUDE_STUB_DECISION_JSON='{"status":"PICKED","issue":42,"reasoning":"x"}'
+    export CLAUDE_STUB_IMPL_RESULT_JSON='{"status":"PR_OPENED","issue":42,"pr_number":7,"pr_url":"x","branch":"ralph/42-x"}'
+    export CLAUDE_STUB_REVIEW_RESULT_JSON='not json at all'
+    run orch::run
+    [ "$status" -eq 3 ]
+    [[ "$output" == *"not valid JSON"* ]]
+}
+
+@test "review unknown status: returns 3" {
+    export CLAUDE_STUB_DECISION_JSON='{"status":"PICKED","issue":42,"reasoning":"x"}'
+    export CLAUDE_STUB_IMPL_RESULT_JSON='{"status":"PR_OPENED","issue":42,"pr_number":7,"pr_url":"x","branch":"ralph/42-x"}'
+    export CLAUDE_STUB_REVIEW_RESULT_JSON='{"status":"WAT"}'
+    run orch::run
+    [ "$status" -eq 3 ]
+}
+
+@test "review claude exit non-zero: returns 1" {
+    export CLAUDE_STUB_DECISION_JSON='{"status":"PICKED","issue":42,"reasoning":"x"}'
+    export CLAUDE_STUB_IMPL_RESULT_JSON='{"status":"PR_OPENED","issue":42,"pr_number":7,"pr_url":"x","branch":"ralph/42-x"}'
+    export CLAUDE_STUB_REVIEW_RESULT_JSON='{"status":"NO_REVIEW","reason":"x"}'
+    export CLAUDE_STUB_REVIEW_EXIT=2
+    run orch::run
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"claude review exited 2"* ]]
+}
+
+@test "AGENT_STUCK skips the review call entirely" {
+    export CLAUDE_STUB_DECISION_JSON='{"status":"PICKED","issue":42,"reasoning":"x"}'
+    export CLAUDE_STUB_IMPL_RESULT_JSON='{"status":"AGENT_STUCK","issue":42,"reason":"missing context"}'
+    run orch::run
+    [ "$status" -eq 0 ]
+    ! [[ "$output" == *"PHASE_START phase=review"* ]]
+    [[ "$output" == *"OUTCOME=agent_stuck issue=42"* ]]
+}
+
+@test "review prompt substitutes target context, PR identity, and review_bot from RALPH_CONFIG" {
+    if ! command -v yq >/dev/null 2>&1; then
+        skip "yq not on PATH"
+    fi
+    local cfg="${BATS_TEST_TMPDIR}/config.yaml"
+    cat > "$cfg" <<YAML
+build_cmd: "make build-r"
+test_cmd: "make test-r"
+branch_prefix: "ralph"
+review_bot:
+  username: "claude-reviewer"
+  source: "review"
+prompt_extensions:
+  review: |
+    EXTRA-REVIEW-MARKER
+YAML
+    export RALPH_CONFIG="$cfg"
+    export CLAUDE_STUB_DECISION_JSON='{"status":"PICKED","issue":42,"reasoning":"x"}'
+    export CLAUDE_STUB_IMPL_RESULT_JSON='{"status":"PR_OPENED","issue":42,"pr_number":7,"pr_url":"x","branch":"ralph/42-x"}'
+    export CLAUDE_STUB_REVIEW_RESULT_JSON='{"status":"NO_REVIEW","reason":"x"}'
+    run orch::run
+    [ "$status" -eq 0 ]
+    grep -q 'ralph-harness — review call'  "$CLAUDE_STUB_STDIN_CAPTURE"
+    grep -q 'make build-r'                 "$CLAUDE_STUB_STDIN_CAPTURE"
+    grep -q 'make test-r'                  "$CLAUDE_STUB_STDIN_CAPTURE"
+    grep -q 'claude-reviewer'              "$CLAUDE_STUB_STDIN_CAPTURE"
+    grep -q '`review`'                     "$CLAUDE_STUB_STDIN_CAPTURE"
+    grep -q 'ralph/42-x'                   "$CLAUDE_STUB_STDIN_CAPTURE"
+    grep -q 'EXTRA-REVIEW-MARKER'          "$CLAUDE_STUB_STDIN_CAPTURE"
+    # No unsubstituted review placeholders should leak through.
+    ! grep -q '{{RALPH_REVIEW_BOT_USERNAME}}' "$CLAUDE_STUB_STDIN_CAPTURE"
+    ! grep -q '{{RALPH_REVIEW_BOT_SOURCE}}'   "$CLAUDE_STUB_STDIN_CAPTURE"
+    ! grep -q '{{RALPH_PR_NUMBER}}'           "$CLAUDE_STUB_STDIN_CAPTURE"
+    ! grep -q '{{RALPH_PR_BRANCH}}'           "$CLAUDE_STUB_STDIN_CAPTURE"
+    ! grep -q '{{RALPH_ISSUE_NUMBER}}'        "$CLAUDE_STUB_STDIN_CAPTURE"
+}
+
+@test "RALPH_REVIEW_WAIT_SEC=0 skips the sleep (tests would hang otherwise)" {
+    export RALPH_REVIEW_WAIT_SEC=0
+    export CLAUDE_STUB_DECISION_JSON='{"status":"PICKED","issue":42,"reasoning":"x"}'
+    export CLAUDE_STUB_IMPL_RESULT_JSON='{"status":"PR_OPENED","issue":42,"pr_number":7,"pr_url":"x","branch":"ralph/42-x"}'
+    local started ended
+    started=$(date +%s)
+    run orch::run
+    ended=$(date +%s)
+    [ "$status" -eq 0 ]
+    # If the sleep had run at default 600s this would obviously fail.
+    (( ended - started < 30 ))
 }

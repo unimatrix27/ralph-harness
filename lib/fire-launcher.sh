@@ -1,10 +1,16 @@
 # shellcheck shell=bash
 #
 # fire-launcher.sh — fires one throwaway EC2 instance per iteration and
-# enforces the wall-clock backstop from the laptop side. Slice 6 swaps
+# enforces the wall-clock backstop from the laptop side. Slice 6 swapped
 # the slice-5 hello payload for the real ec2-bootstrap: install deps,
 # fetch SSM secrets, fresh-clone the target, validate .ralph/config.yaml,
-# then hand off to a stub orchestrator that emits OUTCOME=ready.
+# then hand off to the orchestrator. Slice 9 adds a post-hoc
+# agent-stuck check that runs after the instance terminates: if no PR
+# carrying the launch tag exists on the target repo and the picked
+# issue is recoverable from CloudWatch (PICKED_ISSUE=<n> marker), the
+# launcher labels the source issue agent-stuck. Covers the case where
+# the box is hard-killed (wall-clock breach, orchestrator crash) before
+# the impl call could self-label.
 #
 # Public surface:
 #   fire::run
@@ -24,6 +30,7 @@
 #   RALPH_AMI_SSM_PARAM           /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
 #   RALPH_MAX_LIFETIME_MIN        75
 #   RALPH_POLL_INTERVAL_SEC       20
+#   RALPH_AGENT_STUCK_LABEL       agent-stuck            (post-hoc label)
 #   FIRE_USER_DATA_FILE           override; if set, used verbatim as the
 #                                 sole cloud-init payload (no lib bundling)
 #
@@ -59,6 +66,7 @@ FIRE_IAM_PROFILE="${RALPH_IAM_PROFILE:-ralph-ec2-profile}"
 FIRE_AMI_SSM_PARAM="${RALPH_AMI_SSM_PARAM:-/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}"
 FIRE_MAX_LIFETIME_MIN="${RALPH_MAX_LIFETIME_MIN:-75}"
 FIRE_POLL_INTERVAL_SEC="${RALPH_POLL_INTERVAL_SEC:-20}"
+FIRE_AGENT_STUCK_LABEL="${RALPH_AGENT_STUCK_LABEL:-agent-stuck}"
 
 fire::__err()  { printf 'fire-launcher: error: %s\n' "$*" >&2; }
 fire::__info() { printf 'fire-launcher: %s\n' "$*"; }
@@ -135,6 +143,7 @@ fire::__user_data_files() {
     local here
     here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     printf '%s\n' "${here}/target-config-schema.sh"
+    printf '%s\n' "${here}/github-state-mutator.sh"
     printf '%s\n' "${here}/ec2-orchestrator.sh"
     printf '%s\n' "${here}/cloud-init/bootstrap.sh"
 }
@@ -142,13 +151,14 @@ fire::__user_data_files() {
 # fire::__prompt_files
 #
 # Emits one path per line for prompt templates that should be embedded
-# as on-disk files in the rendered user-data. Slice 7 shipped discovery;
-# slice 8 adds implementation; slice 9 will add review.
+# as on-disk files in the rendered user-data. Slice 7 shipped discovery,
+# slice 8 added implementation, slice 9 adds review.
 fire::__prompt_files() {
     local here
     here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
     printf '%s\n' "${here}/prompts/discovery.md"
     printf '%s\n' "${here}/prompts/implementation.md"
+    printf '%s\n' "${here}/prompts/review.md"
 }
 
 # fire::__embed_prompt <abs-prompt-path>
@@ -210,6 +220,7 @@ fire::__render_user_data() {
         printf 'export RALPH_CLAUDE_OAUTH_SSM_KEY=%q\n'  "$oauth_key"
         printf 'export RALPH_DISCOVERY_PROMPT=%q\n'      "/opt/ralph/prompts/discovery.md"
         printf 'export RALPH_IMPLEMENTATION_PROMPT=%q\n'  "/opt/ralph/prompts/implementation.md"
+        printf 'export RALPH_REVIEW_PROMPT=%q\n'          "/opt/ralph/prompts/review.md"
         for f in "${prompts[@]}"; do
             fire::__embed_prompt "$f"
         done
@@ -310,6 +321,105 @@ fire::__wait_for_terminated() {
     done
 }
 
+# fire::__pr_with_launch_tag_exists <target-repo> <launch-tag>
+#
+# Returns 0 (true) if the target repo has at least one PR (any state)
+# whose body contains the `<!-- ralph-launch: <tag> -->` marker the
+# implementation call embeds. Returns 1 (false) on absence; on any gh
+# failure (auth/network/rate) returns 1 as well so the caller treats
+# the absence as "unknown" — the worst case is a duplicate
+# `agent-stuck` label, which gsm::swap_label-style idempotency in the
+# label edit makes a no-op anyway.
+fire::__pr_with_launch_tag_exists() {
+    local target_repo="${1:?target_repo required}"
+    local launch_tag="${2:?launch_tag required}"
+    if ! command -v gh >/dev/null 2>&1; then
+        fire::__info "post-hoc: gh not on PATH; skipping PR-tag check"
+        return 1
+    fi
+    local count
+    count=$(gh pr list \
+        --repo "$target_repo" \
+        --state all \
+        --limit 50 \
+        --json number,body \
+        --jq "[.[] | select(.body // \"\" | contains(\"ralph-launch: ${launch_tag}\"))] | length" \
+        2>/dev/null)
+    [[ -z "$count" ]] && count=0
+    (( count > 0 ))
+}
+
+# fire::__fetch_picked_issue <instance-id>
+#
+# Greps the per-instance CloudWatch log stream for the orchestrator's
+# `PICKED_ISSUE=<n>` marker and emits the integer on stdout (empty if
+# not found). Tolerates missing log group / stream / aws failures by
+# emitting nothing.
+fire::__fetch_picked_issue() {
+    local instance_id="${1:?instance_id required}"
+    local raw issue
+    raw=$(fire::__aws logs filter-log-events \
+        --log-group-name "$FIRE_LOG_GROUP" \
+        --log-stream-names "$instance_id" \
+        --filter-pattern '"PICKED_ISSUE="' \
+        --output json 2>/dev/null) || return 0
+    [[ -z "$raw" ]] && return 0
+    if command -v jq >/dev/null 2>&1; then
+        issue=$(printf '%s' "$raw" \
+            | jq -r '.events[]?.message // empty' 2>/dev/null \
+            | grep -oE 'PICKED_ISSUE=[0-9]+' \
+            | head -n 1 \
+            | cut -d= -f2)
+    else
+        issue=$(printf '%s' "$raw" \
+            | grep -oE 'PICKED_ISSUE=[0-9]+' \
+            | head -n 1 \
+            | cut -d= -f2)
+    fi
+    [[ -n "$issue" ]] && printf '%s' "$issue"
+    return 0
+}
+
+# fire::__post_hoc_stuck_check <instance-id> <launch-tag>
+#
+# Slice 9 contract: after the EC2 has terminated, if no PR carrying the
+# launch tag is on the target repo, treat the run as agent-stuck for
+# the picked issue and apply the configured stuck-label from the
+# laptop side. Covers wall-clock-killed and orchestrator-crashed cases
+# where the impl call could not self-label.
+#
+# Always returns 0 — post-hoc bookkeeping must never mask the actual
+# wait_for_terminated exit code from the caller.
+fire::__post_hoc_stuck_check() {
+    local instance_id="${1:?instance_id required}"
+    local launch_tag="${2:?launch_tag required}"
+    local target_repo="${RALPH_TARGET_REPO:-}"
+    [[ -z "$target_repo" ]] && return 0
+
+    if fire::__pr_with_launch_tag_exists "$target_repo" "$launch_tag"; then
+        fire::__info "post-hoc: PR with launch tag ${launch_tag} present; clean termination"
+        return 0
+    fi
+
+    local picked_issue
+    picked_issue=$(fire::__fetch_picked_issue "$instance_id")
+    if [[ -z "$picked_issue" ]]; then
+        fire::__info "post-hoc: no PR for launch ${launch_tag} and no picked issue recoverable from CloudWatch; nothing to label"
+        return 0
+    fi
+
+    fire::__info "post-hoc: no PR for launch ${launch_tag}; applying ${FIRE_AGENT_STUCK_LABEL} to ${target_repo}#${picked_issue}"
+    if ! command -v gh >/dev/null 2>&1; then
+        fire::__info "post-hoc: gh not on PATH; cannot apply ${FIRE_AGENT_STUCK_LABEL} label"
+        return 0
+    fi
+    gh issue edit "$picked_issue" \
+        --repo "$target_repo" \
+        --add-label "$FIRE_AGENT_STUCK_LABEL" >/dev/null 2>&1 \
+        || fire::__info "post-hoc: gh issue edit returned non-zero (label may already be present)"
+    return 0
+}
+
 fire::run() {
     if [[ -z "${RALPH_TARGET_REPO:-}" ]]; then
         fire::__err "RALPH_TARGET_REPO is required (e.g. owner/repo)"
@@ -351,5 +461,14 @@ fire::run() {
     fire::__info "log_group=${FIRE_LOG_GROUP} log_stream=${instance_id}"
     fire::__info "tail with: aws --region ${FIRE_REGION} logs tail ${FIRE_LOG_GROUP} --log-stream-names ${instance_id} --follow"
 
-    fire::__wait_for_terminated "$instance_id"
+    local wait_rc=0
+    fire::__wait_for_terminated "$instance_id" || wait_rc=$?
+
+    # Slice 9 post-hoc agent-stuck check. Runs unconditionally so it
+    # also covers the wall-clock-breach (rc=3) path. The launch tag
+    # mirrors the EC2 instance id (set by lib/cloud-init/bootstrap.sh
+    # as RALPH_LAUNCH_TAG).
+    fire::__post_hoc_stuck_check "$instance_id" "$instance_id"
+
+    return "$wait_rc"
 }

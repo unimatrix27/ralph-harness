@@ -60,6 +60,66 @@ Slice 5 — fire-launcher (single-fire EC2 + CloudWatch streaming):
   launcher force-`terminate-instances` and exits non-zero.
 - [`bin/fire.sh`](bin/fire.sh) — single-shot launcher CLI.
 
+Slice 9 — review call (post-PR) + post-hoc agent-stuck detection:
+
+- [`prompts/review.md`](prompts/review.md) — generic review prompt
+  template. Target context (repo, default branch, work dir, build/test
+  commands, picked issue number, PR number, PR branch, configured
+  `review_bot.username` and `.source`, optional
+  `prompt_extensions.review`) is injected via `{{...}}` placeholders;
+  the template itself contains zero target-specific identifiers.
+- `lib/ec2-orchestrator.sh` — `orch::run` now chains a review call
+  onto the `PR_OPENED` branch from slice 8: bash `sleep
+  RALPH_REVIEW_WAIT_SEC` (default `600`s — the configured external
+  review bot's window), render `prompts/review.md`, invoke
+  `claude --print`, wrap the call in
+  `PHASE_START phase=review issue=<n> pr=<m>` /
+  `PHASE_END phase=review duration_s=… status=…` markers (status
+  comes from the result file), verify `/tmp/ralph/review-result.json`,
+  branch on its `status`. Right after the discovery `PICKED` branch
+  the orchestrator emits a stable `PICKED_ISSUE=<n>` marker so the
+  launcher's post-hoc check can correlate hard-killed instances back
+  to a source issue.
+- The review call writes `/tmp/ralph/review-result.json` with one of
+  two shapes:
+  - `{"status":"NO_REVIEW","reason":"…"}` — no comments / reviews
+    from the configured `review_bot.username` (with matching
+    `review_bot.source`) within the 10-minute window. No revision,
+    no caveman log entry, no state mutation.
+  - `{"status":"REVISION_APPLIED","issue":<n>,"pr_number":<m>,"summary":"…","gotcha":"…"}`
+    — exactly ONE revision pass: the call addresses the configured
+    bot's verdict, runs build + test until green, commits with a
+    `review: address …` message, and pushes to the same PR branch.
+    No follow-up rounds, no agent-vs-agent ping-pong.
+- Bash branches on `review-result.json.status`: `NO_REVIEW` →
+  `OUTCOME=pr_opened issue=<n> pr=<m> review=none`; `REVISION_APPLIED`
+  → `OUTCOME=pr_opened issue=<n> pr=<m> review=revised` and one
+  caveman-format comment is appended to the milestone-log issue via
+  `gsm::append_caveman_log` (from `lib/github-state-mutator.sh`,
+  bundled into the EC2 user-data alongside the orchestrator).
+- Multi-reviewer case: only the configured `review_bot` is consulted;
+  Copilot, humans, and other bots on the same PR are ignored.
+- `lib/fire-launcher.sh` — embeds `prompts/review.md` alongside
+  discovery + implementation, exports
+  `RALPH_REVIEW_PROMPT=/opt/ralph/prompts/review.md`, and bundles
+  `lib/github-state-mutator.sh` into the user-data so the orchestrator
+  can call `gsm::append_caveman_log` on the worker. After
+  `wait_for_terminated` (regardless of clean exit or wall-clock breach)
+  the launcher runs a post-hoc agent-stuck check from the laptop:
+  - List target-repo PRs whose body contains
+    `<!-- ralph-launch: <RALPH_LAUNCH_TAG> -->` (the marker the impl
+    call embeds). If at least one is found, the run is treated as a
+    clean termination.
+  - Otherwise, fetch the per-instance CloudWatch stream
+    (`aws logs filter-log-events`) for the orchestrator's
+    `PICKED_ISSUE=<n>` marker. If found, apply the configured
+    `agent_stuck_label` (default `agent-stuck`) to that source issue
+    via `gh issue edit`. Covers both wall-clock-killed and
+    orchestrator-crashed cases where the impl call could not
+    self-label.
+  - If neither a tagged PR nor a `PICKED_ISSUE` marker is recoverable,
+    the post-hoc check is a no-op (clean exit).
+
 Slice 8 — implementation call:
 
 - [`prompts/implementation.md`](prompts/implementation.md) — generic
@@ -228,7 +288,7 @@ RALPH_TARGET_REPO=owner/target ./bin/bootstrap-aws.sh
 # Sync the macOS Keychain credential into SSM (re-run after every claude /login):
 ./bin/sync-credential.sh
 
-# Fire one throwaway EC2 instance (slice 6 ec2-bootstrap, stub orchestrator):
+# Fire one throwaway EC2 instance (full discovery → impl → review chain):
 RALPH_TARGET_REPO=owner/target ./bin/fire.sh
 
 # Run the test suite:

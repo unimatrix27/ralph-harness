@@ -5,11 +5,12 @@
 # $CLAUDE_STUB_EXIT (default 0).
 #
 # Detects which call this is by reading stdin and looking for the
-# discovery vs implementation marker line in the rendered prompt:
+# discovery / implementation / review marker line in the rendered prompt:
 #
 #   "ralph-harness — discovery call"      -> writes the four discovery
 #                                            output files
 #   "ralph-harness — implementation call" -> writes impl-result.json
+#   "ralph-harness — review call"         -> writes review-result.json
 #
 # Anything else falls through to discovery defaults.
 #
@@ -20,10 +21,13 @@
 #   CLAUDE_STUB_CRAFTED_PROMPT     crafted-prompt.md contents (default: "")
 #   CLAUDE_STUB_MILESTONE_LOG      milestone-log.json contents (default: "{}")
 #   CLAUDE_STUB_IMPL_RESULT_JSON   impl-result.json contents
+#   CLAUDE_STUB_REVIEW_RESULT_JSON review-result.json contents (default: NO_REVIEW)
 #   CLAUDE_STUB_SKIP_FILE          if set to a basename, that one file is
 #                                  NOT written (used to test the missing-
 #                                  output contract violation path)
-#   CLAUDE_STUB_EXIT               exit code (default 0)
+#   CLAUDE_STUB_EXIT               exit code (default 0) — applies to all calls
+#   CLAUDE_STUB_REVIEW_EXIT        per-call override for the review claude
+#                                  invocation (default: $CLAUDE_STUB_EXIT)
 #   CLAUDE_STUB_STDIN_CAPTURE      if set, appends stdin to that path with
 #                                  a per-invocation boundary marker
 #
@@ -60,14 +64,28 @@ write_unless_skipped() {
     printf '%s' "$content" > "${out}/${name}"
 }
 
-if [[ "$stdin_content" == *"ralph-harness — implementation call"* ]]; then
-    : "${CLAUDE_STUB_IMPL_RESULT_JSON:=$'{"status":"PR_OPENED","issue":1,"pr_number":2,"pr_url":"https://github.com/owner/target/pull/2","branch":"ralph/1-stub"}'}"
+# bash's $'…' ANSI-C quoting strips literal double quotes when used
+# inside ${var:=…}; assign defaults via plain '…' single-quoted vars
+# first, then dereference inside the parameter expansion.
+__default_review='{"status":"NO_REVIEW","reason":"stub default"}'
+__default_impl='{"status":"PR_OPENED","issue":1,"pr_number":2,"pr_url":"https://github.com/owner/target/pull/2","branch":"ralph/1-stub"}'
+__default_decision='{"status":"NONE","reasoning":"stub"}'
+__default_issue='{}'
+__default_milestone='{}'
+__default_crafted='stub crafted prompt'
+
+if [[ "$stdin_content" == *"ralph-harness — review call"* ]]; then
+    : "${CLAUDE_STUB_REVIEW_RESULT_JSON:=$__default_review}"
+    write_unless_skipped review-result.json "$CLAUDE_STUB_REVIEW_RESULT_JSON"
+    exit "${CLAUDE_STUB_REVIEW_EXIT:-${CLAUDE_STUB_EXIT:-0}}"
+elif [[ "$stdin_content" == *"ralph-harness — implementation call"* ]]; then
+    : "${CLAUDE_STUB_IMPL_RESULT_JSON:=$__default_impl}"
     write_unless_skipped impl-result.json "$CLAUDE_STUB_IMPL_RESULT_JSON"
 else
-    : "${CLAUDE_STUB_DECISION_JSON:=$'{"status":"NONE","reasoning":"stub"}'}"
-    : "${CLAUDE_STUB_ISSUE_JSON:=$'{}'}"
-    : "${CLAUDE_STUB_CRAFTED_PROMPT:=stub crafted prompt}"
-    : "${CLAUDE_STUB_MILESTONE_LOG:=$'{}'}"
+    : "${CLAUDE_STUB_DECISION_JSON:=$__default_decision}"
+    : "${CLAUDE_STUB_ISSUE_JSON:=$__default_issue}"
+    : "${CLAUDE_STUB_CRAFTED_PROMPT:=$__default_crafted}"
+    : "${CLAUDE_STUB_MILESTONE_LOG:=$__default_milestone}"
 
     write_unless_skipped decision.json      "$CLAUDE_STUB_DECISION_JSON"
     write_unless_skipped issue.json         "$CLAUDE_STUB_ISSUE_JSON"
