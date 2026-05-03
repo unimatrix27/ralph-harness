@@ -65,6 +65,13 @@ INSTANCE_ID=$(boot__md instance-id)
 REGION="${RALPH_AWS_REGION:-$(boot__md placement/region)}"
 LOG_STREAM="${INSTANCE_ID:-unknown-instance}"
 
+# Per-launch identifier embedded by the implementation call as an HTML
+# comment in the PR body so the launcher can correlate post-hoc when the
+# instance was hard-killed before recording state. Defaults to the
+# instance id; falls back to a timestamp+pid pair if IMDS is unreachable.
+RALPH_LAUNCH_TAG="${INSTANCE_ID:-$(date -u +%s)-$$}"
+export RALPH_LAUNCH_TAG
+
 # ---- log streaming + shutdown trap -------------------------------------------
 
 boot__flush_logs() {

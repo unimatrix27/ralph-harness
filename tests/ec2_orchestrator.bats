@@ -1,10 +1,12 @@
 #!/usr/bin/env bats
 #
-# Tests for lib/ec2-orchestrator.sh. Slice 7 ships the discovery call:
-# render the prompt, fire claude, branch on /tmp/ralph/decision.json.
-# The `claude` binary is stubbed via temp-dir-on-PATH and writes canned
-# output files; we assert on phase markers, OUTCOME line, exit code,
-# and the rendered prompt content fed to claude on stdin.
+# Tests for lib/ec2-orchestrator.sh. Slice 8 chains the implementation
+# call onto the PICKED branch from slice 7's discovery: render the
+# prompt + crafted context, fire claude, branch on
+# /tmp/ralph/impl-result.json. The `claude` binary is stubbed via
+# temp-dir-on-PATH and detects discovery vs impl by inspecting stdin;
+# we assert on phase markers, OUTCOME line, exit code, and the
+# rendered prompt content fed to claude on stdin.
 
 setup() {
     ROOT="$(cd "${BATS_TEST_DIRNAME}/.." && pwd)"
@@ -28,9 +30,15 @@ setup() {
     export RALPH_DEFAULT_BRANCH="main"
     mkdir -p "$RALPH_WORK_DIR"
 
-    # Discovery prompt path is fixed to the real template — we want
-    # rendering to exercise it.
+    # Discovery + impl prompt paths fixed to the real templates — we
+    # want rendering to exercise them.
     export RALPH_DISCOVERY_PROMPT="${ROOT}/prompts/discovery.md"
+    export RALPH_IMPLEMENTATION_PROMPT="${ROOT}/prompts/implementation.md"
+
+    # Per-launch identifier embedded in PR bodies for slice 9 post-hoc
+    # correlation. Tests that assert on the rendered impl prompt set
+    # their own value; the default just keeps it non-empty.
+    export RALPH_LAUNCH_TAG="i-test"
 
     # No config file by default; tests that need the build/test/branch_prefix
     # substitutions populate one explicitly.
@@ -40,37 +48,56 @@ setup() {
     source "${ROOT}/lib/ec2-orchestrator.sh"
 }
 
-# ---- happy path: PICKED -----------------------------------------------------
+# ---- happy path: PICKED → impl PR_OPENED -----------------------------------
 
-@test "discovery PICKED: emits phase markers, OUTCOME=picked, exits 0" {
+@test "PICKED → impl PR_OPENED: both phase markers, OUTCOME=pr_opened, exits 0" {
     export CLAUDE_STUB_DECISION_JSON='{"status":"PICKED","issue":42,"reasoning":"highest priority"}'
+    export CLAUDE_STUB_IMPL_RESULT_JSON='{"status":"PR_OPENED","issue":42,"pr_number":7,"pr_url":"https://github.com/owner/target/pull/7","branch":"ralph/42-x"}'
     run orch::run
     [ "$status" -eq 0 ]
     [[ "$output" == *"PHASE_START phase=discovery"* ]]
     [[ "$output" == *"PHASE_END phase=discovery duration_s="* ]]
-    [[ "$output" == *"OUTCOME=picked issue=42"* ]]
+    [[ "$output" == *"PHASE_START phase=implementation"* ]]
+    [[ "$output" == *"PHASE_END phase=implementation duration_s="* ]]
+    [[ "$output" == *"issue=42"* ]]
+    [[ "$output" == *"status=PR_OPENED"* ]]
+    [[ "$output" == *"OUTCOME=pr_opened issue=42 pr=7"* ]]
 }
 
-@test "discovery PICKED without issue number returns 3" {
+@test "PICKED → impl AGENT_STUCK: OUTCOME=agent_stuck, exits 0" {
+    export CLAUDE_STUB_DECISION_JSON='{"status":"PICKED","issue":42,"reasoning":"x"}'
+    export CLAUDE_STUB_IMPL_RESULT_JSON='{"status":"AGENT_STUCK","issue":42,"reason":"missing target context"}'
+    run orch::run
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PHASE_END phase=implementation"* ]]
+    [[ "$output" == *"status=AGENT_STUCK"* ]]
+    [[ "$output" == *"OUTCOME=agent_stuck issue=42"* ]]
+    ! [[ "$output" == *"OUTCOME=pr_opened"* ]]
+}
+
+@test "discovery PICKED without issue number returns 3 before impl runs" {
     export CLAUDE_STUB_DECISION_JSON='{"status":"PICKED","reasoning":"oops"}'
     run orch::run
     [ "$status" -eq 3 ]
+    ! [[ "$output" == *"PHASE_START phase=implementation"* ]]
 }
 
 # ---- NONE / ALL_BLOCKED branches -------------------------------------------
 
-@test "discovery NONE: emits OUTCOME=no_work, exits 0" {
+@test "discovery NONE: skips impl, emits OUTCOME=no_work, exits 0" {
     export CLAUDE_STUB_DECISION_JSON='{"status":"NONE","reasoning":"no candidates"}'
     run orch::run
     [ "$status" -eq 0 ]
     [[ "$output" == *"OUTCOME=no_work"* ]]
+    ! [[ "$output" == *"PHASE_START phase=implementation"* ]]
 }
 
-@test "discovery ALL_BLOCKED: emits OUTCOME=all_blocked, exits 0" {
+@test "discovery ALL_BLOCKED: skips impl, emits OUTCOME=all_blocked, exits 0" {
     export CLAUDE_STUB_DECISION_JSON='{"status":"ALL_BLOCKED","reasoning":"every candidate blocked"}'
     run orch::run
     [ "$status" -eq 0 ]
     [[ "$output" == *"OUTCOME=all_blocked"* ]]
+    ! [[ "$output" == *"PHASE_START phase=implementation"* ]]
 }
 
 @test "discovery unknown status: returns 3" {
@@ -204,4 +231,107 @@ YAML
     grep -q '^arg=--foo$' "$CLAUDE_STUB_LOG"
     grep -q '^arg=--bar$' "$CLAUDE_STUB_LOG"
     ! grep -q '^arg=bypassPermissions$' "$CLAUDE_STUB_LOG"
+}
+
+# ---- impl output contract --------------------------------------------------
+
+@test "impl missing impl-result.json: returns 3" {
+    export CLAUDE_STUB_DECISION_JSON='{"status":"PICKED","issue":42,"reasoning":"x"}'
+    export CLAUDE_STUB_SKIP_FILE="impl-result.json"
+    run orch::run
+    [ "$status" -eq 3 ]
+    [[ "$output" == *"impl-result.json"* ]]
+}
+
+@test "impl invalid impl-result.json: returns 3" {
+    export CLAUDE_STUB_DECISION_JSON='{"status":"PICKED","issue":42,"reasoning":"x"}'
+    export CLAUDE_STUB_IMPL_RESULT_JSON='not json at all'
+    run orch::run
+    [ "$status" -eq 3 ]
+    [[ "$output" == *"not valid JSON"* ]]
+}
+
+@test "impl PR_OPENED without pr_number: returns 3" {
+    export CLAUDE_STUB_DECISION_JSON='{"status":"PICKED","issue":42,"reasoning":"x"}'
+    export CLAUDE_STUB_IMPL_RESULT_JSON='{"status":"PR_OPENED","issue":42}'
+    run orch::run
+    [ "$status" -eq 3 ]
+}
+
+@test "impl unknown status: returns 3" {
+    export CLAUDE_STUB_DECISION_JSON='{"status":"PICKED","issue":42,"reasoning":"x"}'
+    export CLAUDE_STUB_IMPL_RESULT_JSON='{"status":"WAT","issue":42}'
+    run orch::run
+    [ "$status" -eq 3 ]
+}
+
+@test "impl claude exit non-zero: returns 1" {
+    export CLAUDE_STUB_DECISION_JSON='{"status":"PICKED","issue":42,"reasoning":"x"}'
+    export CLAUDE_STUB_IMPL_RESULT_JSON='{"status":"PR_OPENED","issue":42,"pr_number":7,"pr_url":"x","branch":"x"}'
+    export CLAUDE_STUB_EXIT=2
+    run orch::run
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"claude"* ]]
+}
+
+# ---- impl prompt rendering --------------------------------------------------
+
+@test "impl prompt substitutes target context, agent_stuck_label, launch tag, and crafted context" {
+    if ! command -v yq >/dev/null 2>&1; then
+        skip "yq not on PATH"
+    fi
+    local cfg="${BATS_TEST_TMPDIR}/config.yaml"
+    cat > "$cfg" <<YAML
+build_cmd: "make build-x"
+test_cmd: "make test-x"
+branch_prefix: "ralph"
+review_bot:
+  username: "claude"
+  source: "comment"
+agent_stuck_label: "agent-stuck-custom"
+prompt_extensions:
+  implementation: |
+    EXTRA-IMPL-MARKER
+YAML
+    export RALPH_CONFIG="$cfg"
+    export RALPH_LAUNCH_TAG="i-launchstub"
+    export CLAUDE_STUB_DECISION_JSON='{"status":"PICKED","issue":42,"reasoning":"x"}'
+    export CLAUDE_STUB_IMPL_RESULT_JSON='{"status":"PR_OPENED","issue":42,"pr_number":7,"pr_url":"https://github.com/o/t/pull/7","branch":"ralph/42-x"}'
+    export CLAUDE_STUB_CRAFTED_PROMPT='## Crafted: pick #42'
+    run orch::run
+    [ "$status" -eq 0 ]
+    grep -q 'ralph-harness — implementation call' "$CLAUDE_STUB_STDIN_CAPTURE"
+    grep -q 'make build-x'                        "$CLAUDE_STUB_STDIN_CAPTURE"
+    grep -q 'make test-x'                         "$CLAUDE_STUB_STDIN_CAPTURE"
+    grep -q 'agent-stuck-custom'                  "$CLAUDE_STUB_STDIN_CAPTURE"
+    grep -q 'i-launchstub'                        "$CLAUDE_STUB_STDIN_CAPTURE"
+    grep -q 'EXTRA-IMPL-MARKER'                   "$CLAUDE_STUB_STDIN_CAPTURE"
+    grep -q '## Crafted: pick #42'                "$CLAUDE_STUB_STDIN_CAPTURE"
+    # No unsubstituted impl placeholders should leak through.
+    ! grep -q '{{RALPH_AGENT_STUCK_LABEL}}'  "$CLAUDE_STUB_STDIN_CAPTURE"
+    ! grep -q '{{RALPH_LAUNCH_TAG}}'         "$CLAUDE_STUB_STDIN_CAPTURE"
+    ! grep -q '{{RALPH_BUILD_CMD}}'          "$CLAUDE_STUB_STDIN_CAPTURE"
+    ! grep -q '{{RALPH_TEST_CMD}}'           "$CLAUDE_STUB_STDIN_CAPTURE"
+    ! grep -q '{{RALPH_BRANCH_PREFIX}}'      "$CLAUDE_STUB_STDIN_CAPTURE"
+}
+
+@test "impl prompt defaults agent_stuck_label to 'agent-stuck' when config omits it" {
+    if ! command -v yq >/dev/null 2>&1; then
+        skip "yq not on PATH"
+    fi
+    local cfg="${BATS_TEST_TMPDIR}/config.yaml"
+    cat > "$cfg" <<YAML
+build_cmd: "make build"
+test_cmd: "make test"
+branch_prefix: "ralph"
+review_bot:
+  username: "claude"
+  source: "comment"
+YAML
+    export RALPH_CONFIG="$cfg"
+    export CLAUDE_STUB_DECISION_JSON='{"status":"PICKED","issue":42,"reasoning":"x"}'
+    export CLAUDE_STUB_IMPL_RESULT_JSON='{"status":"PR_OPENED","issue":42,"pr_number":7,"pr_url":"x","branch":"x"}'
+    run orch::run
+    [ "$status" -eq 0 ]
+    grep -q 'agent-stuck' "$CLAUDE_STUB_STDIN_CAPTURE"
 }

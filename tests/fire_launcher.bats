@@ -191,6 +191,23 @@ setup() {
     [[ "$out" == *'{{RALPH_TARGET_REPO}}'* ]]
 }
 
+@test "render_user_data: embeds the implementation prompt and points the orchestrator at it" {
+    local out
+    out=$(fire::__render_user_data "/ralph/main")
+    [[ "$out" == *'export RALPH_IMPLEMENTATION_PROMPT='*'/opt/ralph/prompts/implementation.md'* ]]
+    [[ "$out" == *'/opt/ralph/prompts/implementation.md'* ]]
+    [[ "$out" == *'ralph-harness — implementation call'* ]]
+    [[ "$out" == *'{{RALPH_AGENT_STUCK_LABEL}}'* ]]
+    [[ "$out" == *'{{RALPH_LAUNCH_TAG}}'* ]]
+}
+
+@test "render_user_data: derives RALPH_LAUNCH_TAG from the EC2 instance id" {
+    local out
+    out=$(fire::__render_user_data "/ralph/main")
+    [[ "$out" == *'RALPH_LAUNCH_TAG'* ]]
+    [[ "$out" == *'INSTANCE_ID'* ]]
+}
+
 @test "render_user_data: installs the documented OS deps" {
     local out
     out=$(fire::__render_user_data "/ralph/main")
