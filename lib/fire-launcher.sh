@@ -278,7 +278,7 @@ fire::__run_instance() {
         --associate-public-ip-address \
         --iam-instance-profile "Name=${FIRE_IAM_PROFILE}" \
         --instance-initiated-shutdown-behavior terminate \
-        --user-data "file://${user_data_file}" \
+        --user-data "fileb://${user_data_file}" \
         --block-device-mappings "file://${bdm_file}" \
         --tag-specifications "file://${tag_file}" \
         --metadata-options "HttpTokens=required,HttpEndpoint=enabled,HttpPutResponseHopLimit=2" \
@@ -443,16 +443,34 @@ fire::run() {
     trap "rm -rf '$tmp'" EXIT INT TERM
 
     local user_data_file="${tmp}/user-data.sh"
+    local user_data_gz="${tmp}/user-data.sh.gz"
     local tag_file="${tmp}/tags.json"
     local bdm_file="${tmp}/bdm.json"
     fire::__render_user_data "$FIRE_LOG_GROUP" > "$user_data_file" || return $?
     fire::__tag_spec "$FIRE_MAX_LIFETIME_MIN" > "$tag_file"
     fire::__block_device_mapping "$FIRE_ROOT_VOLUME_GB" > "$bdm_file"
 
+    # EC2 caps user-data at 16 KiB raw. cloud-init on AL2023 auto-decompresses
+    # gzipped payloads on first boot, so we ship the bundle gzipped and pass it
+    # as binary (fileb://) to skip the AWS CLI's UTF-8 validation of the file.
+    if ! gzip -9 -c "$user_data_file" > "$user_data_gz"; then
+        fire::__err "gzip of user-data failed"
+        return 2
+    fi
+    local raw_bytes gz_bytes b64_bytes
+    raw_bytes=$(wc -c < "$user_data_file" | tr -d ' ')
+    gz_bytes=$(wc -c < "$user_data_gz" | tr -d ' ')
+    b64_bytes=$(( (gz_bytes + 2) / 3 * 4 ))
+    fire::__info "user-data size: raw=${raw_bytes} gzip=${gz_bytes} base64=${b64_bytes} (cap=25600)"
+    if (( b64_bytes > 25600 )); then
+        fire::__err "user-data exceeds EC2 25600-byte base64 cap (got ${b64_bytes}); trim the bundle"
+        return 2
+    fi
+
     local instance_id
     instance_id=$(fire::__run_instance \
         "$image_id" "$subnet_id" "$sg_id" \
-        "$user_data_file" "$tag_file" "$bdm_file") || return $?
+        "$user_data_gz" "$tag_file" "$bdm_file") || return $?
     if [[ -z "$instance_id" || "$instance_id" == "None" ]]; then
         fire::__err "run-instances did not return an instance id"
         return 1
