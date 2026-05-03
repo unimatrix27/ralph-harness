@@ -221,6 +221,17 @@ fire::__render_user_data() {
         printf 'export RALPH_DISCOVERY_PROMPT=%q\n'      "/opt/ralph/prompts/discovery.md"
         printf 'export RALPH_IMPLEMENTATION_PROMPT=%q\n'  "/opt/ralph/prompts/implementation.md"
         printf 'export RALPH_REVIEW_PROMPT=%q\n'          "/opt/ralph/prompts/review.md"
+        # Operator-side debug knob: RALPH_DEBUG_TRANSCRIPT=1 ./bin/fire.sh
+        # flips claude's headless output to one JSON object per line
+        # (every system/user/assistant message + every tool_use and
+        # tool_result), which the orchestrator forwards to stdout and
+        # ends up in the per-instance CloudWatch stream. Verbose; do not
+        # set as default. claude requires --verbose alongside
+        # --output-format stream-json.
+        if [[ "${RALPH_DEBUG_TRANSCRIPT:-0}" == "1" ]]; then
+            printf 'export RALPH_CLAUDE_FLAGS=%q\n' \
+                '--permission-mode bypassPermissions --output-format stream-json --verbose'
+        fi
         for f in "${prompts[@]}"; do
             fire::__embed_prompt "$f"
         done

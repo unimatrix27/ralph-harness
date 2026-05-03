@@ -283,3 +283,22 @@ Sign-off comment closes the HITL loop.
   not finish within `RALPH_MAX_LIFETIME_MIN` (default 75). The post-hoc
   check labels the source issue `agent-stuck`. Inspect the CloudWatch
   stream for the last `PHASE_START` to identify which call hung.
+
+## Inspecting the LLM conversation
+
+Default fire emits only each call's final assistant message to the
+per-instance CloudWatch stream. To see the full transcript — every
+system / user / assistant message plus every tool_use and tool_result —
+flip the operator-side debug knob before firing:
+
+```sh
+RALPH_DEBUG_TRANSCRIPT=1 ./bin/fire.sh
+```
+
+The launcher then exports
+`RALPH_CLAUDE_FLAGS="--permission-mode bypassPermissions --output-format stream-json --verbose"`
+into the user-data, the orchestrator's three claude calls (discovery,
+implementation, review) emit one JSON object per line on stdout, and
+those land in CloudWatch like any other phase output. Do not leave the
+knob on by default — the volume is significant and CloudWatch ingest is
+billed per GB.
