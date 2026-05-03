@@ -78,6 +78,13 @@ Expected: each `awsbs:` info line ends with `created …` on the first run, or
 `already exists` on a re-run. The script is idempotent — re-run if you are
 unsure of state.
 
+> Step 1 can be skipped on subsequent runs: `./bin/fire.sh` calls the same
+> idempotent bootstrap before launching the instance. The first run on a
+> fresh account still needs explicit step-1 because steps 2 and 3 (sync
+> credential, seed PAT) depend on the SSM parameters this step creates.
+> Set `RALPH_SKIP_BOOTSTRAP=1` on the operator's shell to disable the
+> auto-bootstrap when firing with fire-only IAM perms.
+
 What was created (verify with the AWS console or CLI if you want belt-and-
 braces):
 
