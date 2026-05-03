@@ -26,7 +26,7 @@ following are deferred to later iterations:
   `gh`, Docker, `uv`, `claude`, `jq`, `yq`) so cold-start drops from minutes
   to seconds. Iteration 1 installs at boot via `dotnet-install.sh` etc.
 - **Iteration 3 — spot + ARM (`t4g`).** Iteration 1 fires
-  `t3a.large` on-demand for predictability under the wall-clock backstop.
+  `m7a.large` on-demand for predictability under the wall-clock backstop.
 - **Iteration 3 — multi-target dispatch.** One run, one target. Routing
   across multiple target repos is deferred.
 - **Iteration 3 — observability dashboard.** Iteration 1 ships
@@ -114,7 +114,7 @@ Slice 3 — aws-bootstrap:
 Slice 5 — fire-launcher (single-fire EC2 + CloudWatch streaming):
 
 - [`lib/fire-launcher.sh`](lib/fire-launcher.sh) — fires one throwaway EC2
-  in `eu-central-1` (`t3a.large`, 30 GB gp3, AL2023 from public SSM AMI
+  in `eu-central-1` (`m7a.large`, 30 GB gp3, AL2023 from public SSM AMI
   parameter, default-VPC public subnet, auto-assigned public IP, IMDSv2
   required) using the bootstrapped IAM instance profile and security group.
   Tags every instance + volume `Project=ralph` plus a UTC `LaunchedAt`

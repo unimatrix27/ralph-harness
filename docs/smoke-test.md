@@ -147,7 +147,7 @@ Expected stdout from the launcher:
 
 ```
 fire-launcher: region=eu-central-1 vpc=vpc-… subnet=subnet-… sg=sg-… ami=ami-…
-fire-launcher: instance_type=t3a.large root_gb=30 max_lifetime_min=75
+fire-launcher: instance_type=m7a.large root_gb=30 max_lifetime_min=75
 fire-launcher: target=<owner>/<sandbox-repo> log_group=/ralph/main
 fire-launcher: github_key=/ralph/github-pat oauth_key=/ralph/claude-oauth-credential
 fire-launcher: launched i-…
