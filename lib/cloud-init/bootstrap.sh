@@ -42,6 +42,19 @@
 
 set -uo pipefail
 
+# cloud-init runs user-data as root via systemd with no HOME env. Under
+# `set -u` every ${HOME} reference would trip "unbound variable" and abort
+# boot__main, so default it before any function uses it.
+: "${HOME:=/root}"
+export HOME
+
+# claude CLI refuses --permission-mode bypassPermissions / --dangerously-
+# skip-permissions when running as root. cloud-init runs user-data as
+# root, and the orchestrator's claude invocations need the bypass. The
+# throwaway EC2 (scoped IAM, no SSH, ≤75-min lifetime) is the sandbox
+# this knob exists for.
+export IS_SANDBOX=1
+
 : "${RALPH_LOG_GROUP:=/ralph/main}"
 : "${RALPH_GITHUB_TOKEN_SSM_KEY:=/ralph/github-pat}"
 : "${RALPH_CLAUDE_OAUTH_SSM_KEY:=/ralph/claude-oauth-credential}"
@@ -102,7 +115,7 @@ PY
     )
     [[ -z "$req" ]] && return 0
     local tmp
-    tmp=$(mktemp -t ralph-logs) || return 0
+    tmp=$(mktemp -t ralph-logs.XXXXXX) || return 0
     chmod 600 "$tmp"
     printf '%s' "$req" > "$tmp"
     aws --region "$REGION" logs put-log-events \
@@ -142,18 +155,23 @@ boot__ssm_get() {
 boot__install_deps() {
     boot__info "PHASE_START phase=install-deps"
 
-    dnf -y -q install dnf-plugins-core git curl tar gzip python3 jq >/dev/null
+    # AL2023 base image ships `curl-minimal`, which already provides
+    # /usr/bin/curl. Pulling the full `curl` package triggers a hard
+    # transaction conflict, so we don't request it. `--allowerasing`
+    # is passed defensively so any later package needing full `curl`
+    # can swap curl-minimal out cleanly instead of aborting the install.
+    dnf -y -q --allowerasing install dnf-plugins-core git tar gzip python3 jq >/dev/null
 
     # Node 20 — AL2023 ships the `nodejs20` package directly.
-    dnf -y -q install nodejs20 >/dev/null
+    dnf -y -q --allowerasing install nodejs20 >/dev/null
 
     # gh CLI — official rpm repo.
     dnf -y -q config-manager --add-repo \
         https://cli.github.com/packages/rpm/gh-cli.repo >/dev/null
-    dnf -y -q install gh >/dev/null
+    dnf -y -q --allowerasing install gh >/dev/null
 
     # Docker — required by the github MCP container.
-    dnf -y -q install docker >/dev/null
+    dnf -y -q --allowerasing install docker >/dev/null
     systemctl enable --now docker >/dev/null 2>&1 || true
 
     # yq (mikefarah v4) — required by target-config-schema.
@@ -211,6 +229,13 @@ boot__fetch_secrets() {
     chmod 600 "$pat_file"
     if ! gh auth login --with-token < "$pat_file" >/dev/null 2>&1; then
         boot__err "gh auth login failed"
+        return 1
+    fi
+    # Register gh's git-credential helper so plain `git clone https://…`
+    # against the target (private repo expected) picks up the PAT. Without
+    # this, the clone-target phase 404s on private targets.
+    if ! gh auth setup-git >/dev/null 2>&1; then
+        boot__err "gh auth setup-git failed"
         return 1
     fi
     GH_TOKEN="$(<"$pat_file")"

@@ -127,7 +127,7 @@ awsbs::__inline_policy_doc() {
       "Action": ["kms:Decrypt"],
       "Resource": "*",
       "Condition": {
-        "StringEquals": {"kms:RequestAlias": "${kms_alias}"}
+        "ForAnyValue:StringEquals": {"kms:ResourceAliases": "${kms_alias}"}
       }
     },
     {
