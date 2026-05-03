@@ -436,3 +436,42 @@ setup() {
     grep -q '^arg=edit$' "$GH_STUB_LOG"
     grep -q '^arg=7$' "$GH_STUB_LOG"
 }
+
+# ---- user-data size + gzip transport (issue #20) ----
+
+@test "run: passes user-data as gzipped binary (fileb://*.gz) to run-instances" {
+    run fire::run
+    [ "$status" -eq 0 ]
+    grep -q '^arg=--user-data$' "$AWS_STUB_LOG"
+    # The arg following --user-data is the file ref. Must be fileb:// (binary)
+    # and point at the gzipped artefact, not the raw script.
+    grep -qE '^arg=fileb://.*/user-data\.sh\.gz$' "$AWS_STUB_LOG"
+    ! grep -qE '^arg=file://.*/user-data\.sh$' "$AWS_STUB_LOG"
+}
+
+@test "run: emits a user-data size info line under the EC2 25600-byte cap" {
+    run fire::run
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"user-data size: raw="* ]]
+    [[ "$output" == *"gzip="* ]]
+    [[ "$output" == *"base64="* ]]
+    [[ "$output" == *"cap=25600"* ]]
+    # Extract the encoded byte count and assert it is under the cap. This is
+    # the regression guard: future bundle growth that pushes us over 25600
+    # base64 bytes will fail here instead of at EC2 RunInstances.
+    local b64
+    b64=$(printf '%s\n' "$output" | sed -nE 's/.*base64=([0-9]+).*/\1/p' | head -1)
+    [ -n "$b64" ]
+    [ "$b64" -lt 25600 ]
+}
+
+@test "render_user_data: rendered + gzipped payload fits under the EC2 cap" {
+    # Direct guard on the renderer so a future slice that bloats the bundle
+    # without touching fire::run still trips the test.
+    local raw_bytes gz_bytes b64_bytes
+    raw_bytes=$(fire::__render_user_data "/ralph/main" | wc -c | tr -d ' ')
+    gz_bytes=$(fire::__render_user_data "/ralph/main" | gzip -9 | wc -c | tr -d ' ')
+    b64_bytes=$(( (gz_bytes + 2) / 3 * 4 ))
+    [ "$raw_bytes" -gt 0 ]
+    [ "$b64_bytes" -lt 25600 ]
+}
