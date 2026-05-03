@@ -6,10 +6,12 @@
 # then hands off to `orch::run`:
 #
 #   1. resolve instance metadata via IMDSv2
-#   2. wire CloudWatch log streaming + EXIT trap so the box terminates on
-#      any exit (success or failure); the launcher set
-#      --instance-initiated-shutdown-behavior=terminate so OS shutdown is
-#      EC2 termination
+#   2. install + start the amazon-cloudwatch-agent so /var/log/ralph.log
+#      streams live to CloudWatch (every ~5s) — survives force-termination
+#      because we no longer depend on a clean shutdown to ship logs.
+#      Wire the EXIT trap so any script exit triggers OS shutdown; the
+#      launcher set --instance-initiated-shutdown-behavior=terminate so
+#      OS shutdown is EC2 termination
 #   3. install OS deps: Node 20, .NET 10 SDK (via dotnet-install.sh), gh
 #      CLI, Docker, uv, claude CLI, plus jq, git, yq for the harness
 #      itself
@@ -85,46 +87,58 @@ LOG_STREAM="${INSTANCE_ID:-unknown-instance}"
 RALPH_LAUNCH_TAG="${INSTANCE_ID:-$(date -u +%s)-$$}"
 export RALPH_LAUNCH_TAG
 
-# ---- log streaming + shutdown trap -------------------------------------------
+# ---- live log streaming via amazon-cloudwatch-agent + shutdown trap ----------
+#
+# CloudWatch shipping is done by amazon-cloudwatch-agent tailing the local
+# log files (force_flush_interval=5s), not by an end-of-run flush. This
+# means logs arrive in CloudWatch within seconds and survive force-
+# termination by the launcher's wall-clock backstop (which bypasses the
+# EXIT trap entirely). The agent install runs early in boot__main; if it
+# fails the run continues without live logs (best-effort, never fatal).
 
-boot__flush_logs() {
-    [[ -z "$REGION" ]] && return 0
-    aws --region "$REGION" logs create-log-stream \
-        --log-group-name "$RALPH_LOG_GROUP" \
-        --log-stream-name "$LOG_STREAM" >/dev/null 2>&1 || true
-    [[ -s "$LOG_FILE" ]] || return 0
-    local req
-    req=$(LOG_FILE="$LOG_FILE" \
-          LOG_GROUP_NAME="$RALPH_LOG_GROUP" \
-          LOG_STREAM="$LOG_STREAM" \
-          python3 - <<'PY' 2>/dev/null
-import json, os, time
-ts = int(time.time() * 1000)
-events = []
-with open(os.environ["LOG_FILE"]) as f:
-    for i, line in enumerate(f.read().splitlines()):
-        if line:
-            events.append({"timestamp": ts + i, "message": line})
-if events:
-    print(json.dumps({
-        "logGroupName": os.environ["LOG_GROUP_NAME"],
-        "logStreamName": os.environ["LOG_STREAM"],
-        "logEvents": events,
-    }))
-PY
-    )
-    [[ -z "$req" ]] && return 0
-    local tmp
-    tmp=$(mktemp -t ralph-logs.XXXXXX) || return 0
-    chmod 600 "$tmp"
-    printf '%s' "$req" > "$tmp"
-    aws --region "$REGION" logs put-log-events \
-        --cli-input-json "file://${tmp}" >/dev/null 2>&1 || true
-    rm -f "$tmp"
+boot__start_cwagent() {
+    boot__info "PHASE_START phase=cwagent stream=${LOG_STREAM}"
+    if ! dnf -y -q --allowerasing install amazon-cloudwatch-agent >/dev/null 2>&1; then
+        boot__err "amazon-cloudwatch-agent install failed; live log streaming disabled"
+        return 0
+    fi
+    local cfg=/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.d/ralph.json
+    install -d -m 755 "$(dirname "$cfg")"
+    cat > "$cfg" <<JSON
+{
+  "agent": { "run_as_user": "root" },
+  "logs": {
+    "force_flush_interval": 5,
+    "logs_collected": {
+      "files": {
+        "collect_list": [
+          {
+            "file_path": "${LOG_FILE}",
+            "log_group_name": "${RALPH_LOG_GROUP}",
+            "log_stream_name": "${LOG_STREAM}",
+            "timezone": "UTC"
+          },
+          {
+            "file_path": "/var/log/cloud-init-output.log",
+            "log_group_name": "${RALPH_LOG_GROUP}",
+            "log_stream_name": "${LOG_STREAM}-cloud-init",
+            "timezone": "UTC"
+          }
+        ]
+      }
+    }
+  }
+}
+JSON
+    if /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+            -a fetch-config -m ec2 -c "file:${cfg}" -s >/dev/null 2>&1; then
+        boot__info "PHASE_END phase=cwagent"
+    else
+        boot__err "amazon-cloudwatch-agent failed to start; live log streaming disabled"
+    fi
 }
 
 boot__shutdown_now() {
-    boot__flush_logs
     /sbin/shutdown -h now 2>/dev/null \
         || /usr/sbin/shutdown -h now 2>/dev/null \
         || shutdown -h now 2>/dev/null \
@@ -370,6 +384,7 @@ boot__main() {
     boot__info "instance=${INSTANCE_ID} region=${REGION} ts=${now}"
     boot__info "target=${RALPH_TARGET_REPO:-unset} log_group=${RALPH_LOG_GROUP} log_stream=${LOG_STREAM}"
 
+    boot__start_cwagent
     boot__install_deps    || return $?
     boot__fetch_secrets   || return $?
     boot__clone_target    || return $?
