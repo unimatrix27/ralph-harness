@@ -23,7 +23,7 @@
 #   RALPH_LOG_GROUP               /ralph/main
 #   RALPH_GITHUB_TOKEN_SSM_KEY    /ralph/github-pat
 #   RALPH_CLAUDE_OAUTH_SSM_KEY    /ralph/claude-oauth-credential
-#   RALPH_INSTANCE_TYPE           m7a.large
+#   RALPH_INSTANCE_TYPE           m7a.xlarge
 #   RALPH_ROOT_VOLUME_GB          30
 #   RALPH_SG_NAME                 ralph-sg               (from aws-bootstrap)
 #   RALPH_IAM_PROFILE             ralph-ec2-profile      (from aws-bootstrap)
@@ -59,7 +59,7 @@ FIRE_REGION="${RALPH_AWS_REGION:-eu-central-1}"
 FIRE_LOG_GROUP="${RALPH_LOG_GROUP:-/ralph/main}"
 FIRE_GITHUB_TOKEN_SSM_KEY="${RALPH_GITHUB_TOKEN_SSM_KEY:-/ralph/github-pat}"
 FIRE_CLAUDE_OAUTH_SSM_KEY="${RALPH_CLAUDE_OAUTH_SSM_KEY:-/ralph/claude-oauth-credential}"
-FIRE_INSTANCE_TYPE="${RALPH_INSTANCE_TYPE:-m7a.large}"
+FIRE_INSTANCE_TYPE="${RALPH_INSTANCE_TYPE:-m7a.xlarge}"
 FIRE_ROOT_VOLUME_GB="${RALPH_ROOT_VOLUME_GB:-30}"
 FIRE_SG_NAME="${RALPH_SG_NAME:-ralph-sg}"
 FIRE_IAM_PROFILE="${RALPH_IAM_PROFILE:-ralph-ec2-profile}"
