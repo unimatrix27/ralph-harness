@@ -225,8 +225,10 @@ fire::__render_user_data() {
             fire::__embed_prompt "$f"
         done
         for f in "${files[@]}"; do
-            printf '\n# ---- bundled %s ----\n' "${f##*/}"
-            sed '1{/^#!/d;}' "$f"
+            # Strip leading shebang, column-0 comment-only lines, and blank
+            # lines to keep the gzipped bundle under EC2's 16 KiB user-data
+            # cap. Indented `#` is preserved so heredoc bodies survive.
+            sed -E -e '1{/^#!/d;}' -e '/^#([^!]|$)/d' -e '/^[[:space:]]*$/d' "$f"
         done
     }
 }
@@ -450,20 +452,22 @@ fire::run() {
     fire::__tag_spec "$FIRE_MAX_LIFETIME_MIN" > "$tag_file"
     fire::__block_device_mapping "$FIRE_ROOT_VOLUME_GB" > "$bdm_file"
 
-    # EC2 caps user-data at 16 KiB raw. cloud-init on AL2023 auto-decompresses
-    # gzipped payloads on first boot, so we ship the bundle gzipped and pass it
-    # as binary (fileb://) to skip the AWS CLI's UTF-8 validation of the file.
+    # EC2 caps user-data at 16384 bytes raw (the limit applies to the decoded
+    # payload, not the base64 wire form). cloud-init on AL2023
+    # auto-decompresses gzipped user-data on first boot, so we ship the bundle
+    # gzipped and pass it as binary (fileb://) to skip the AWS CLI's UTF-8
+    # validation of the file. The 16384-byte cap then applies to the gzipped
+    # bytes.
     if ! gzip -9 -c "$user_data_file" > "$user_data_gz"; then
         fire::__err "gzip of user-data failed"
         return 2
     fi
-    local raw_bytes gz_bytes b64_bytes
+    local raw_bytes gz_bytes
     raw_bytes=$(wc -c < "$user_data_file" | tr -d ' ')
     gz_bytes=$(wc -c < "$user_data_gz" | tr -d ' ')
-    b64_bytes=$(( (gz_bytes + 2) / 3 * 4 ))
-    fire::__info "user-data size: raw=${raw_bytes} gzip=${gz_bytes} base64=${b64_bytes} (cap=25600)"
-    if (( b64_bytes > 25600 )); then
-        fire::__err "user-data exceeds EC2 25600-byte base64 cap (got ${b64_bytes}); trim the bundle"
+    fire::__info "user-data size: raw=${raw_bytes} gzip=${gz_bytes} (cap=16384)"
+    if (( gz_bytes > 16384 )); then
+        fire::__err "user-data exceeds EC2 16384-byte cap (gzipped ${gz_bytes}); trim the bundle"
         return 2
     fi
 
