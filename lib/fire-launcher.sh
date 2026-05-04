@@ -109,7 +109,7 @@ fire::__resolve_security_group() {
         --query 'SecurityGroups[0].GroupId' \
         --output text 2>/dev/null) || return $?
     if [[ -z "$sg_id" || "$sg_id" == "None" ]]; then
-        fire::__err "security group ${name} not found in vpc ${vpc_id}; run bin/bootstrap-aws.sh first"
+        fire::__err "security group ${name} not found in vpc ${vpc_id}; run ralph-bootstrap-aws first"
         return 2
     fi
     printf '%s' "$sg_id"
