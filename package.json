@@ -1,0 +1,42 @@
+{
+  "name": "@unimatrix27/ralph-harness",
+  "version": "0.1.0",
+  "description": "Throwaway-EC2 loop that picks one ready-for-agent GitHub issue, implements it, opens a PR, runs one auto-review pass, then terminates.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "ralph-fire": "dist/bin/ralph-fire.js",
+    "ralph-orchestrate": "dist/bin/ralph-orchestrate.js"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "CONTRIBUTING.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@aws-sdk/client-cloudwatch-logs": "^3.700.0",
+    "@aws-sdk/client-ec2": "^3.700.0",
+    "@aws-sdk/client-ssm": "^3.700.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/unimatrix27/ralph-harness.git"
+  },
+  "license": "MIT"
+}

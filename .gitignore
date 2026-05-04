@@ -4,3 +4,8 @@
 .env
 .env.*
 !.env.example
+
+# Node / TypeScript
+node_modules/
+dist/
+*.tsbuildinfo
