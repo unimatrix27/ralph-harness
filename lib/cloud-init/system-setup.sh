@@ -335,4 +335,7 @@ setup__main() {
     setup__write_env_file
 }
 
-setup__main 2>&1 | tee -a "$LOG_FILE"
+# Stdout is already routed to /var/log/ralph.log by the user-data stub's
+# `exec > >(tee -a /var/log/ralph.log) 2>&1`; teeing again here would
+# double-write every line into the cwagent stream.
+setup__main 2>&1

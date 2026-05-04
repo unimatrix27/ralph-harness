@@ -83,7 +83,7 @@ export function renderUserData(input: UserDataInput): string {
   // invoked by `ralph-orchestrate` as its first step).
   const stub = `#!/bin/bash
 set -euo pipefail
-exec > >(tee -a /var/log/ralph-user-data.log) 2>&1
+exec > >(tee -a /var/log/ralph.log) 2>&1
 ${exports}
 curl -fsSL https://rpm.nodesource.com/setup_24.x | bash -
 dnf install -y nodejs git jq awscli

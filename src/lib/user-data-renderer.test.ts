@@ -40,7 +40,7 @@ describe("renderUserData — snapshot at default inputs", () => {
     expect(out).toMatchInlineSnapshot(`
       "#!/bin/bash
       set -euo pipefail
-      exec > >(tee -a /var/log/ralph-user-data.log) 2>&1
+      exec > >(tee -a /var/log/ralph.log) 2>&1
       export RALPH_AGENT_STUCK_LABEL='agent-stuck'
       export RALPH_AWS_REGION='eu-central-1'
       export RALPH_CLAUDE_OAUTH_SSM_KEY='/ralph/claude-oauth-credential'
