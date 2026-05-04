@@ -39,7 +39,7 @@ tests/fixtures/      yaml fixtures for the tests
 - [`yq`](https://github.com/mikefarah/yq) v4 (the Go binary by mikefarah)
 - `jq` (used by `gh --jq` in the github-state-mutator module)
 - `gh` (GitHub CLI, authenticated for any target repo you mutate manually)
-- `aws` CLI v2 (only needed for `bin/bootstrap-aws.sh`; tests use a stub)
+- `aws` CLI v2 (only needed for `ralph-tail-logs`; tests use a stub. Note: `ralph-bootstrap-aws` and `ralph-sync-credential` use the AWS SDK directly and do not require the `aws` CLI to be installed.)
 - [`bats-core`](https://github.com/bats-core/bats-core) for tests
 
 On macOS:

@@ -59,7 +59,7 @@ key):
 - **Plan limits.** The EC2 worker burns the engineer's Claude plan limits
   on every run.
 - **Rotation.** Each desktop `claude /login` may invalidate the prior
-  refresh token. Re-run `bin/sync-credential.sh` immediately after every
+  refresh token. Re-run `ralph-sync-credential` immediately after every
   login, or the worker will fail at the first `claude --print` call.
 - **Concurrent use unverified.** Simultaneous use of the same OAuth
   credential by the desktop app and an EC2 worker is not validated.
@@ -100,16 +100,17 @@ Slice 2 — github-state-mutator:
   `find_or_create_milestone_log_issue`, `append_caveman_log`.
 - [`bin/gsm`](bin/gsm) — CLI for manual verification against a sandbox repo.
 
-Slice 3 — aws-bootstrap:
+Slice 3 — aws-bootstrap (TS, slice-4 port):
 
-- [`lib/aws-bootstrap.sh`](lib/aws-bootstrap.sh) — idempotent `awsbs::ensure_*`
-  functions for every AWS-side resource the harness needs (KMS alias `alias/ralph`,
-  SSM SecureString placeholders, EC2 IAM role + instance profile with
-  minimum-scope inline policy, security group in the default VPC, CloudWatch
-  log group) plus the target-side `agent-stuck` label.
-- [`bin/bootstrap-aws.sh`](bin/bootstrap-aws.sh) — single-shot CLI: reads
-  config from env, ensures every resource, second run is a clean no-op.
-  Region is forced to `eu-central-1`.
+- [`src/lib/aws-bootstrap.ts`](src/lib/aws-bootstrap.ts) — idempotent
+  `ensure*` functions for every AWS-side resource the harness needs (KMS
+  alias `alias/ralph`, SSM SecureString placeholders, EC2 IAM role +
+  instance profile with minimum-scope inline policy, security group in the
+  default VPC, CloudWatch log group) plus the target-side `agent-stuck`
+  label. Implemented over the AWS SDK v3 clients (`@aws-sdk/client-{kms,ssm,iam,ec2,cloudwatch-logs,sts}`).
+- `ralph-bootstrap-aws` (`src/bin/ralph-bootstrap-aws.ts`) — single-shot
+  CLI: reads config from env, ensures every resource, second run is a
+  clean no-op. Region is forced to `eu-central-1`.
 
 Slice 5 — fire-launcher (single-fire EC2 + CloudWatch streaming):
 
@@ -303,29 +304,37 @@ aws --region eu-central-1 logs tail /ralph/main \
     --log-stream-names <i-...> --follow
 ```
 
-Slice 4 — credential-syncer (macOS only):
+Slice 4 — operator helper CLIs (TS, macOS-only Keychain syncer):
 
-- [`lib/credential-syncer.sh`](lib/credential-syncer.sh) — reads the
-  `Claude Code-credentials` entry from the macOS Keychain and uploads it to
-  the SSM SecureString at `/ralph/claude-oauth-credential` (overridable via
-  `RALPH_CLAUDE_OAUTH_SSM_KEY`), encrypted under `alias/ralph`.
-- [`bin/sync-credential.sh`](bin/sync-credential.sh) — thin CLI wrapper.
-  Region is forced to `eu-central-1`. The credential is passed to `aws` via
-  `--cli-input-json file://...` (mode 0600, removed on exit) so it is never
-  visible on any process's argv, and is never echoed in info or error output.
+- [`src/lib/credential-syncer.ts`](src/lib/credential-syncer.ts) — reads
+  the `Claude Code-credentials` entry from the macOS Keychain and uploads
+  it to the SSM SecureString at `/ralph/claude-oauth-credential`
+  (overridable via `RALPH_CLAUDE_OAUTH_SSM_KEY`), encrypted under
+  `alias/ralph`.
+- `ralph-sync-credential` (`src/bin/ralph-sync-credential.ts`) — thin CLI
+  wrapper. Region is forced to `eu-central-1`. The credential is passed
+  to `@aws-sdk/client-ssm` as the request body of `PutParameter`, so it
+  is never visible on any process's argv and is never echoed in info or
+  error output.
+- `ralph-sync-github-pat` — net-new operator CLI: reads a GitHub PAT
+  from stdin and uploads it to the SSM SecureString at `/ralph/github-pat`
+  (overridable via `RALPH_GITHUB_TOKEN_SSM_KEY`). Pass the token on stdin
+  only — argv is rejected.
+- `ralph-tail-logs` — thin wrapper around `aws logs tail` that defaults
+  to `/ralph/main` and the worker's per-instance stream.
 
 Run after every desktop `claude /login`:
 
 ```sh
-./bin/sync-credential.sh
+ralph-sync-credential
 # or with a custom key:
-RALPH_CLAUDE_OAUTH_SSM_KEY=/ralph/claude-oauth-credential ./bin/sync-credential.sh
+RALPH_CLAUDE_OAUTH_SSM_KEY=/ralph/claude-oauth-credential ralph-sync-credential
 ```
 
 Caveats:
 
 - **Rotation:** every desktop `claude /login` may invalidate the prior
-  refresh token. Re-run `bin/sync-credential.sh` immediately after each
+  refresh token. Re-run `ralph-sync-credential` immediately after each
   login so the EC2 worker picks up the fresh credential.
 - **Concurrent use unverified:** simultaneous use of the same credential by
   the desktop app and an EC2 worker has not been validated; assume one
@@ -347,10 +356,13 @@ Caveats:
 ./bin/gsm swap-label owner/sandbox 1 ready-for-agent ready-for-human
 
 # Bootstrap AWS resources for a target repo (idempotent):
-RALPH_TARGET_REPO=owner/target ./bin/bootstrap-aws.sh
+RALPH_TARGET_REPO=owner/target ralph-bootstrap-aws
 
 # Sync the macOS Keychain credential into SSM (re-run after every claude /login):
-./bin/sync-credential.sh
+ralph-sync-credential
+
+# Seed the GitHub PAT into SSM (one-time):
+echo "$GITHUB_PAT" | ralph-sync-github-pat
 
 # Fire one throwaway EC2 instance (full discovery → impl → review chain):
 RALPH_TARGET_REPO=owner/target ./bin/fire.sh

@@ -71,16 +71,16 @@ export RALPH_TARGET_REPO=<owner>/<sandbox-repo>     # the sandbox, not this harn
 ## Step 1 — bootstrap AWS
 
 ```sh
-./bin/bootstrap-aws.sh
+ralph-bootstrap-aws
 ```
 
-Expected: each `awsbs:` info line ends with `created …` on the first run, or
-`already exists` on a re-run. The script is idempotent — re-run if you are
-unsure of state.
+Expected: each `aws-bootstrap:` info line ends with `created …` on the first
+run, or `already exists` on a re-run. The CLI is idempotent — re-run if you
+are unsure of state.
 
-> Step 1 can be skipped on subsequent runs: `./bin/fire.sh` calls the same
-> idempotent bootstrap before launching the instance. The first run on a
-> fresh account still needs explicit step-1 because steps 2 and 3 (sync
+> Step 1 can be skipped on subsequent runs: `./bin/fire.sh` subprocesses the
+> same idempotent bootstrap before launching the instance. The first run on
+> a fresh account still needs explicit step-1 because steps 2 and 3 (sync
 > credential, seed PAT) depend on the SSM parameters this step creates.
 > Set `RALPH_SKIP_BOOTSTRAP=1` on the operator's shell to disable the
 > auto-bootstrap when firing with fire-only IAM perms.
@@ -104,7 +104,7 @@ Re-run the same command. Every line should now read `already exists`.
 ## Step 2 — sync the Claude OAuth credential
 
 ```sh
-./bin/sync-credential.sh
+ralph-sync-credential
 ```
 
 Expected: a single `credential-syncer: uploaded …` info line and exit 0. The
@@ -114,19 +114,15 @@ inspection of the output.
 ## Step 3 — seed the GitHub PAT into SSM
 
 The credential syncer covers the Claude OAuth credential only. The GitHub PAT
-must be uploaded by hand once per fresh account (and re-uploaded only when the
-PAT is rotated):
+must be uploaded by hand once per fresh account (and re-uploaded only when
+the PAT is rotated). `ralph-sync-github-pat` reads the token from stdin so
+it never lands on argv or in shell history:
 
 ```sh
-read -rs RALPH_PAT && export RALPH_PAT
-aws --region eu-central-1 ssm put-parameter \
-  --name /ralph/github-pat \
-  --type SecureString --key-id alias/ralph \
-  --value "$RALPH_PAT" --overwrite >/dev/null
+read -rs RALPH_PAT && printf '%s' "$RALPH_PAT" | ralph-sync-github-pat
 unset RALPH_PAT
 ```
 
-`read -rs` keeps the PAT off the shell history and out of the visible buffer.
 Verify the parameter was overwritten:
 
 ```sh
@@ -165,8 +161,9 @@ Open a second terminal (`./bin/fire.sh` is still blocking in the first one):
 
 ```sh
 INSTANCE_ID=i-…    # from step 4
-aws --region eu-central-1 logs tail /ralph/main \
-    --log-stream-names "$INSTANCE_ID" --follow
+ralph-tail-logs "$INSTANCE_ID"
+# (equivalent to: aws --region eu-central-1 logs tail /ralph/main \
+#                     --log-stream-names "$INSTANCE_ID" --follow)
 ```
 
 Expected phase sequence (each line emits `PHASE_START …` then `PHASE_END …`):

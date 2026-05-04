@@ -1,15 +1,19 @@
 {
   "name": "@unimatrix27/ralph-harness",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Throwaway-EC2 loop that picks one ready-for-agent GitHub issue, implements it, opens a PR, runs one auto-review pass, then terminates.",
   "type": "module",
   "engines": {
     "node": ">=24"
   },
   "bin": {
+    "ralph-bootstrap-aws": "dist/bin/ralph-bootstrap-aws.js",
     "ralph-fire": "dist/bin/ralph-fire.js",
     "ralph-gsm": "dist/bin/ralph-gsm.js",
     "ralph-orchestrate": "dist/bin/ralph-orchestrate.js",
+    "ralph-sync-credential": "dist/bin/ralph-sync-credential.js",
+    "ralph-sync-github-pat": "dist/bin/ralph-sync-github-pat.js",
+    "ralph-tail-logs": "dist/bin/ralph-tail-logs.js",
     "ralph-validate-config": "dist/bin/ralph-validate-config.js"
   },
   "files": [
@@ -25,7 +29,10 @@
   "dependencies": {
     "@aws-sdk/client-cloudwatch-logs": "^3.700.0",
     "@aws-sdk/client-ec2": "^3.700.0",
+    "@aws-sdk/client-iam": "^3.700.0",
+    "@aws-sdk/client-kms": "^3.700.0",
     "@aws-sdk/client-ssm": "^3.700.0",
+    "@aws-sdk/client-sts": "^3.700.0",
     "yaml": "^2.8.4",
     "zod": "^4.4.3"
   },
