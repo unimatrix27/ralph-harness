@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   discoverDotenvPaths,
@@ -93,6 +93,15 @@ describe("parseDotenv — edge cases", () => {
 });
 
 describe("discoverDotenvPaths", () => {
+  beforeEach(() => {
+    // GitHub Actions runners set XDG_CONFIG_HOME, which would otherwise
+    // pre-empt the homeDir-based fallback path being asserted here.
+    vi.stubEnv("XDG_CONFIG_HOME", "");
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("returns CWD .env then ~/.config/ralph/.env", () => {
     const paths = discoverDotenvPaths({
       cwd: "/cwd",
