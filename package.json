@@ -1,6 +1,6 @@
 {
   "name": "@unimatrix27/ralph-harness",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Throwaway-EC2 loop that picks one ready-for-agent GitHub issue, implements it, opens a PR, runs one auto-review pass, then terminates.",
   "type": "module",
   "engines": {
@@ -8,6 +8,7 @@
   },
   "bin": {
     "ralph-fire": "dist/bin/ralph-fire.js",
+    "ralph-gsm": "dist/bin/ralph-gsm.js",
     "ralph-orchestrate": "dist/bin/ralph-orchestrate.js",
     "ralph-validate-config": "dist/bin/ralph-validate-config.js"
   },
