@@ -297,7 +297,7 @@ Slice 6 — ec2-bootstrap (deps, secrets, fresh clone, hello orchestrator):
 
 ```sh
 # Fire one EC2 (slice 6 ec2-bootstrap, stub orchestrator):
-RALPH_TARGET_REPO=owner/target ./bin/fire.sh
+RALPH_TARGET_REPO=owner/target ralph-fire
 
 # Tail the per-instance CloudWatch stream:
 aws --region eu-central-1 logs tail /ralph/main \
@@ -345,15 +345,15 @@ Caveats:
   long-lived API key is a one-file change in the future `ec2-bootstrap`
   module (see issue #7).
 
-[`tests/`](tests/) holds bats-core tests with yaml fixtures and stubbed
-`gh` and `aws` binaries on `PATH`.
+[`src/`](src/) holds the TS modules and bin entries with co-located vitest
+tests (`*.test.ts`). Run with `npm test`.
 
 ```sh
 # Validate a config file by hand:
-./bin/load-config path/to/.ralph/config.yaml
+ralph-validate-config path/to/.ralph/config.yaml
 
 # Manually swap a label on a sandbox repo:
-./bin/gsm swap-label owner/sandbox 1 ready-for-agent ready-for-human
+ralph-gsm swap-label owner/sandbox 1 ready-for-agent ready-for-human
 
 # Bootstrap AWS resources for a target repo (idempotent):
 RALPH_TARGET_REPO=owner/target ralph-bootstrap-aws
@@ -365,14 +365,15 @@ ralph-sync-credential
 echo "$GITHUB_PAT" | ralph-sync-github-pat
 
 # Fire one throwaway EC2 instance (full discovery → impl → review chain):
-RALPH_TARGET_REPO=owner/target ./bin/fire.sh
+RALPH_TARGET_REPO=owner/target ralph-fire
 
 # Run the test suite:
-bats tests/
+npm test
 ```
 
-Dependencies: `yq` (mikefarah/yq v4), `jq`, `gh`, `aws` (CLI v2), and
-`bats-core`. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for install hints.
+Dependencies (operator side): Node ≥ 24 and the harness installed globally
+(`npm install -g @unimatrix27/ralph-harness@1.0.0`), plus `jq`, `gh`, and
+`aws` CLI v2. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for install hints.
 
 ## Schema at a glance
 

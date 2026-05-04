@@ -1,6 +1,6 @@
 {
   "name": "@unimatrix27/ralph-harness",
-  "version": "0.4.0",
+  "version": "1.0.0",
   "description": "Throwaway-EC2 loop that picks one ready-for-agent GitHub issue, implements it, opens a PR, runs one auto-review pass, then terminates.",
   "type": "module",
   "engines": {
@@ -18,6 +18,8 @@
   },
   "files": [
     "dist/",
+    "lib/cloud-init/",
+    "prompts/",
     "README.md",
     "CONTRIBUTING.md"
   ],
