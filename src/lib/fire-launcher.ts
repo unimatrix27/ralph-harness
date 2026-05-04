@@ -241,11 +241,9 @@ async function runInstance(
     new RunInstancesCommand({
       ImageId: p.imageId,
       InstanceType: p.config.instanceType as never,
-      SubnetId: p.subnetId,
-      SecurityGroupIds: [p.sgId],
-      // RunInstances does not accept --associate-public-ip-address; the
-      // default subnet auto-assigns when MapPublicIpOnLaunch is true. We
-      // force-enable here via the network interface form.
+      // SubnetId, SecurityGroupIds, and AssociatePublicIpAddress all live
+      // on the NetworkInterfaces entry. EC2 rejects mixing top-level
+      // SubnetId/SecurityGroupIds with a NetworkInterfaces block.
       NetworkInterfaces: [
         {
           DeviceIndex: 0,
@@ -308,8 +306,6 @@ async function runInstance(
       moduleErr("run-instances did not return an instance id"),
     );
   }
-  // Network interfaces.SubnetId conflicts with top-level SubnetId in some
-  // SDK versions. The above call works on @aws-sdk/client-ec2 >= 3.700.
   return inst;
 }
 
