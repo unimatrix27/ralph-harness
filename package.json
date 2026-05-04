@@ -1,6 +1,6 @@
 {
   "name": "@unimatrix27/ralph-harness",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Throwaway-EC2 loop that picks one ready-for-agent GitHub issue, implements it, opens a PR, runs one auto-review pass, then terminates.",
   "type": "module",
   "engines": {
