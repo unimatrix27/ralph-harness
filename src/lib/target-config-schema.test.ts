@@ -2,7 +2,12 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ValidateError, validate } from "./target-config-schema.js";
+import {
+  CURRENT_SCHEMA_VERSION,
+  ValidateError,
+  readSchemaVersion,
+  validate,
+} from "./target-config-schema.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixDir = resolve(here, "__fixtures__");
@@ -157,6 +162,45 @@ describe("validate (programmatic edge cases not in the bats matrix)", () => {
       expect((err as ValidateError).code).toBe(5);
       expect((err as ValidateError).message).toMatch(/review_bot.*extra/);
     }
+  });
+
+  it("accepts an explicit schema_version matching CURRENT_SCHEMA_VERSION", () => {
+    const yaml = [
+      `schema_version: ${CURRENT_SCHEMA_VERSION}`,
+      'build_cmd: "make build"',
+      'test_cmd: "make test"',
+      'branch_prefix: "ralph"',
+      "review_bot:",
+      '  username: "claude"',
+      '  source: "comment"',
+      "",
+    ].join("\n");
+    expect(() => validate(yaml)).not.toThrow();
+  });
+
+  it("rejects an unsupported schema_version (forces operator migration)", () => {
+    const yaml = [
+      "schema_version: 99",
+      'build_cmd: "make build"',
+      'test_cmd: "make test"',
+      'branch_prefix: "ralph"',
+      "review_bot:",
+      '  username: "claude"',
+      '  source: "comment"',
+      "",
+    ].join("\n");
+    expect.assertions(1);
+    try {
+      validate(yaml);
+    } catch (err) {
+      expect(err).toBeInstanceOf(ValidateError);
+    }
+  });
+
+  it("readSchemaVersion returns the declared version (or undefined when absent)", () => {
+    expect(readSchemaVersion("schema_version: 1\nbuild_cmd: x\n")).toBe(1);
+    expect(readSchemaVersion("build_cmd: x\n")).toBeUndefined();
+    expect(readSchemaVersion("not: { yaml")).toBeUndefined();
   });
 
   it("rejects an empty string for a required field with exit code 6", () => {

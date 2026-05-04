@@ -20,6 +20,7 @@ import { createRequire } from "node:module";
 
 import { loadDotenv } from "../lib/env-loader.js";
 import { LauncherError, run } from "../lib/fire-launcher.js";
+import { runWizard } from "../lib/ralph-fire-wizard.js";
 
 const require = createRequire(import.meta.url);
 const pkg = require("../../package.json") as { version: string };
@@ -38,6 +39,13 @@ async function main(): Promise<void> {
   }
 
   loadDotenv();
+
+  // Issue #36: when invoked from a TTY with required env unset, walk the
+  // operator through to a launch (auto-discover RALPH_TARGET_REPO from
+  // `git remote get-url origin`, prompt for missing fields, validate the
+  // local .ralph/config.yaml schema version). No-op on non-TTY callers
+  // (CI, EC2 user-data) — the launcher's existing fail-fast still fires.
+  await runWizard({ env: process.env });
 
   if (process.env.RALPH_SKIP_BOOTSTRAP !== "1") {
     const r = spawnSync("ralph-bootstrap-aws", [], {

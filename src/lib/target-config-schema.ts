@@ -32,6 +32,18 @@ export class ValidateError extends Error {
   }
 }
 
+// CURRENT_SCHEMA_VERSION — the schema major number the harness expects.
+// Bumped when a breaking change is made to TargetConfigSchema. v1 was the
+// first explicit version; configs with no `schema_version` field are
+// treated as v1 (the implicit shape that shipped through 1.0.x).
+//
+// Migration story: when CURRENT bumps to N, configs declaring 1..N-1 will
+// fail validate() with ValidateError(6). Operators bump the field after
+// applying any field renames the new version requires. The wizard
+// (issue #36) surfaces the mismatch up-front so the operator does not
+// have to wait for the on-EC2 validator to fail.
+export const CURRENT_SCHEMA_VERSION = 1;
+
 const NonEmptyString = z.string().min(1);
 
 const ReviewBotSchema = z
@@ -56,6 +68,7 @@ const BranchPrefixSchema = NonEmptyString.refine(
 
 export const TargetConfigSchema = z
   .object({
+    schema_version: z.literal(CURRENT_SCHEMA_VERSION).optional(),
     build_cmd: NonEmptyString,
     test_cmd: NonEmptyString,
     branch_prefix: BranchPrefixSchema,
@@ -189,4 +202,29 @@ function formatReceived(received: unknown): string {
 
 export function moduleErr(message: string): string {
   return `${MODULE_PREFIX}: error: ${message}`;
+}
+
+// readSchemaVersion — best-effort lookup of the `schema_version` top-
+// level key. Returns undefined when the key is absent OR the document is
+// malformed; callers (e.g. the wizard) treat those as "unspecified" and
+// surface a separate diagnostic. We do not throw — the authoritative
+// validator (`validate`) is the gate, and reading the version here is a
+// pure inspection.
+export function readSchemaVersion(yamlString: string): number | undefined {
+  let parsed: unknown;
+  try {
+    parsed = parseYaml(yamlString, { prettyErrors: false });
+  } catch {
+    return undefined;
+  }
+  if (
+    parsed === null ||
+    parsed === undefined ||
+    typeof parsed !== "object" ||
+    Array.isArray(parsed)
+  ) {
+    return undefined;
+  }
+  const v = (parsed as Record<string, unknown>).schema_version;
+  return typeof v === "number" ? v : undefined;
 }
