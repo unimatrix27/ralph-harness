@@ -107,8 +107,14 @@ export async function runClaude(
   return new Promise<ClaudeResult>((resolve, reject) => {
     let child;
     try {
+      // The harness always runs claude inside a throwaway worker (cloud-init
+      // EC2 or equivalent). Cloud-init runs as root; without IS_SANDBOX=1
+      // claude refuses --permission-mode bypassPermissions / --dangerously-
+      // skip-permissions and exits 1. Setting it here keeps the contract
+      // self-contained — system-setup.sh's own export does not propagate
+      // back to ralph-orchestrate's process env.
       child = spawn(bin, argv, {
-        env: { ...env } as NodeJS.ProcessEnv,
+        env: { IS_SANDBOX: "1", ...env } as NodeJS.ProcessEnv,
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (err) {
