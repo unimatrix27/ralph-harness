@@ -32,6 +32,7 @@
 //   2   missing AWS-side resource OR missing required env
 //   3   wall-clock ceiling breached; force terminate-instances was issued
 
+import { FilterLogEventsCommand } from "@aws-sdk/client-cloudwatch-logs";
 import {
   DescribeInstancesCommand,
   DescribeSecurityGroupsCommand,
@@ -324,9 +325,55 @@ interface WaitOptions {
   sleep?: Sleeper;
 }
 
+// detectEarlyExit — issue #37 backstop. Looks at the per-instance
+// CloudWatch stream for sentinel lines that prove the orchestrator is
+// done (`ORCHESTRATOR_EXITED rc=N`) or has reached a terminal outcome
+// (`OUTCOME=...`). The trap-shutdown in user-data is the primary
+// mechanism; this check covers the case where the orchestrator process
+// itself was killed (OOM, signal) before its trap could fire. Returns
+// the matching log line on hit, null otherwise. Any read failure is
+// treated as "no signal" — callers fall back to the describe-instances
+// poll + wall-clock ceiling.
+export async function detectEarlyExit(
+  clients: AwsClients,
+  logGroup: string,
+  instanceId: string,
+): Promise<string | null> {
+  try {
+    const r = await clients.logs.send(
+      new FilterLogEventsCommand({
+        logGroupName: logGroup,
+        logStreamNames: [instanceId],
+        // Match either marker. The CloudWatch filter pattern grammar uses
+        // ?-prefixed terms for OR; quoted string literals match anywhere
+        // in the message.
+        filterPattern: '?"ORCHESTRATOR_EXITED rc=" ?"OUTCOME="',
+      }),
+    );
+    for (const ev of r.events ?? []) {
+      const msg = (ev.message ?? "").trim();
+      if (
+        msg.includes("ORCHESTRATOR_EXITED rc=") ||
+        msg.includes("OUTCOME=")
+      ) {
+        return msg;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 // waitForTerminated — polls describe-instances until State.Name=terminated.
 // Returns 0 on clean termination, 3 on wall-clock ceiling breach (after
 // firing terminate-instances on best-effort).
+//
+// Each tick also checks CloudWatch for an early-exit sentinel (issue
+// #37). On hit, terminate-instances is fired immediately and the
+// describe-instances loop continues until the state actually flips to
+// `terminated` — that way callers always see a real terminal state and
+// the post-hoc checker still has time to read the stream.
 export async function waitForTerminated(
   clients: AwsClients,
   opts: WaitOptions,
@@ -334,6 +381,7 @@ export async function waitForTerminated(
   const now = opts.now ?? realNow;
   const sleep = opts.sleep ?? realSleep;
   const deadline = now() + opts.config.maxLifetimeMin * 60_000;
+  let earlyExitForced = false;
   for (;;) {
     let state = "";
     try {
@@ -356,6 +404,31 @@ export async function waitForTerminated(
       opts.info(
         moduleInfo(`instance ${opts.instanceId} state=${state}`),
       );
+    }
+    // CloudWatch backstop — only fire terminate-instances once. Once the
+    // describe-instances loop sees the resulting `terminated` state we
+    // exit cleanly.
+    if (!earlyExitForced) {
+      const marker = await detectEarlyExit(
+        clients,
+        opts.config.logGroup,
+        opts.instanceId,
+      );
+      if (marker !== null) {
+        opts.info(
+          moduleInfo(
+            `early-exit signal observed in CloudWatch: ${marker}; forcing terminate`,
+          ),
+        );
+        try {
+          await clients.ec2.send(
+            new TerminateInstancesCommand({ InstanceIds: [opts.instanceId] }),
+          );
+        } catch {
+          // best-effort
+        }
+        earlyExitForced = true;
+      }
     }
     if (now() >= deadline) {
       opts.info(

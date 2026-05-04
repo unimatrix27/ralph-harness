@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULTS,
   LauncherError,
+  detectEarlyExit,
   resolveLauncherConfig,
   waitForTerminated,
 } from "./fire-launcher.js";
@@ -95,6 +96,59 @@ describe("waitForTerminated", () => {
     expect(lines.some((l) => l.includes("terminated"))).toBe(true);
   });
 
+  it("issue #37: forces terminate-instances on first early-exit sentinel sighting and returns 0 once instance is terminated", async () => {
+    let describeCalls = 0;
+    let terminateCalled = false;
+    const ec2 = {
+      send: async (cmd: { constructor: { name: string } }) => {
+        if (cmd.constructor.name === "TerminateInstancesCommand") {
+          terminateCalled = true;
+          return {};
+        }
+        // Two `running` reads, then `terminated` after the forced
+        // terminate. The CloudWatch backstop must fire before the
+        // instance flips state.
+        describeCalls += 1;
+        const name = describeCalls < 3 ? "running" : "terminated";
+        return { Reservations: [{ Instances: [{ State: { Name: name } }] }] };
+      },
+    };
+    let logsCalls = 0;
+    const logs = {
+      send: async () => {
+        logsCalls += 1;
+        // First poll: nothing. Second poll: sentinel is in CloudWatch.
+        if (logsCalls === 1) return { events: [] };
+        return {
+          events: [
+            { message: "ORCHESTRATOR_EXITED rc=1" },
+          ],
+        };
+      },
+    };
+    let virtualNow = 0;
+    const lines: string[] = [];
+    const rc = await waitForTerminated(
+      { ec2, logs } as never,
+      {
+        config: {
+          maxLifetimeMin: 75,
+          pollIntervalSec: 20,
+          logGroup: "/ralph/main",
+        } as never,
+        instanceId: "i-abc",
+        info: (l) => lines.push(l),
+        now: () => virtualNow,
+        sleep: async () => {
+          virtualNow += 1_000;
+        },
+      },
+    );
+    expect(rc).toBe(0);
+    expect(terminateCalled).toBe(true);
+    expect(lines.some((l) => l.includes("early-exit signal observed"))).toBe(true);
+  });
+
   it("returns 3 and fires terminate-instances when the wall-clock ceiling breaches", async () => {
     let sendCount = 0;
     let terminateCalled = false;
@@ -131,5 +185,63 @@ describe("waitForTerminated", () => {
     expect(rc).toBe(3);
     expect(terminateCalled).toBe(true);
     expect(sendCount).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("detectEarlyExit", () => {
+  it("returns the sentinel line when ORCHESTRATOR_EXITED is in the stream", async () => {
+    const logs = {
+      send: async () => ({
+        events: [
+          { message: "ORCHESTRATOR_EXITED rc=0" },
+        ],
+      }),
+    };
+    const r = await detectEarlyExit(
+      { logs } as never,
+      "/ralph/main",
+      "i-abc",
+    );
+    expect(r).toBe("ORCHESTRATOR_EXITED rc=0");
+  });
+
+  it("returns the OUTCOME line when present", async () => {
+    const logs = {
+      send: async () => ({
+        events: [
+          { message: "OUTCOME=pr_opened issue=42 pr=99 review=none" },
+        ],
+      }),
+    };
+    const r = await detectEarlyExit(
+      { logs } as never,
+      "/ralph/main",
+      "i-abc",
+    );
+    expect(r).toBe("OUTCOME=pr_opened issue=42 pr=99 review=none");
+  });
+
+  it("returns null when no sentinel is in the stream", async () => {
+    const logs = { send: async () => ({ events: [] }) };
+    const r = await detectEarlyExit(
+      { logs } as never,
+      "/ralph/main",
+      "i-abc",
+    );
+    expect(r).toBeNull();
+  });
+
+  it("returns null on transient CloudWatch failure (no sentinel observable)", async () => {
+    const logs = {
+      send: async () => {
+        throw new Error("ResourceNotFoundException");
+      },
+    };
+    const r = await detectEarlyExit(
+      { logs } as never,
+      "/ralph/main",
+      "i-abc",
+    );
+    expect(r).toBeNull();
   });
 });

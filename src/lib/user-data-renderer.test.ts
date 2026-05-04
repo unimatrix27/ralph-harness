@@ -39,8 +39,9 @@ describe("renderUserData — snapshot at default inputs", () => {
     const out = renderUserData(baseInput);
     expect(out).toMatchInlineSnapshot(`
       "#!/bin/bash
-      set -euo pipefail
+      set -uo pipefail
       exec > >(tee -a /var/log/ralph.log) 2>&1
+      trap 'rc=$?; printf "ORCHESTRATOR_EXITED rc=%s\\n" "$rc"; shutdown -h now' EXIT
       export RALPH_AGENT_STUCK_LABEL='agent-stuck'
       export RALPH_AWS_REGION='eu-central-1'
       export RALPH_CLAUDE_OAUTH_SSM_KEY='/ralph/claude-oauth-credential'
@@ -51,9 +52,18 @@ describe("renderUserData — snapshot at default inputs", () => {
       curl -fsSL https://rpm.nodesource.com/setup_24.x | bash -
       dnf install -y nodejs git jq awscli
       npm install -g @unimatrix27/ralph-harness@1.0.0
-      exec ralph-orchestrate
+      ralph-orchestrate
       "
     `);
+  });
+
+  it("emits a shutdown trap so the instance terminates on orchestrator early-exit (issue #37)", () => {
+    const out = renderUserData(baseInput);
+    expect(out).toContain("trap '");
+    expect(out).toContain("shutdown -h now");
+    expect(out).toContain("ORCHESTRATOR_EXITED rc=");
+    // exec ralph-orchestrate would replace the shell and bypass the trap.
+    expect(out).not.toMatch(/^\s*exec\s+ralph-orchestrate\b/m);
   });
 
   it("merges extraEnv keys into the export block", () => {

@@ -81,14 +81,24 @@ export function renderUserData(input: UserDataInput): string {
   // 15-line target — keep this tight. Anything heavyweight goes in
   // `lib/cloud-init/system-setup.sh` (shipped inside the npm package and
   // invoked by `ralph-orchestrate` as its first step).
+  //
+  // The `trap … EXIT` hook (issue #37) emits a sentinel line for the
+  // launcher's CloudWatch backstop and runs `shutdown -h now` on any
+  // exit so the EC2 instance terminates immediately on orchestrator
+  // failure instead of sitting idle until the wall-clock ceiling. The
+  // body uses double-quoted single quotes so $rc is expanded by the
+  // shell at trap-fire time, not at template render time. We do NOT
+  // `exec ralph-orchestrate` because exec replaces the shell and the
+  // trap would never fire.
   const stub = `#!/bin/bash
-set -euo pipefail
+set -uo pipefail
 exec > >(tee -a /var/log/ralph.log) 2>&1
+trap 'rc=$?; printf "ORCHESTRATOR_EXITED rc=%s\\n" "$rc"; shutdown -h now' EXIT
 ${exports}
 curl -fsSL https://rpm.nodesource.com/setup_24.x | bash -
 dnf install -y nodejs git jq awscli
 npm install -g ${pkg}@${input.harnessVersion}
-exec ralph-orchestrate
+ralph-orchestrate
 `;
 
   const bytes = Buffer.byteLength(stub, "utf8");
