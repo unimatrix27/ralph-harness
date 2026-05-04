@@ -1,9 +1,10 @@
 # End-to-end smoke test (HITL)
 
-Iteration-1 closeout runbook. Executes the full chain on a **fresh AWS account**
-against a **no-op test issue** in a sandbox target repo, top to bottom:
-`bootstrap-aws` → `sync-credential` → seed GitHub PAT → `fire` → observe phase
-markers → verify PR shape → verify cleanup.
+Iteration-2 v1.0.0 closeout runbook. Executes the full chain on a **fresh AWS
+account** against a **no-op test issue** in a sandbox target repo, top to bottom:
+install the npm package → `ralph-bootstrap-aws` → `ralph-sync-credential` →
+seed GitHub PAT → `ralph-fire` → observe phase markers → verify PR shape →
+verify cleanup.
 
 This is **human-in-the-loop**: the operator runs each step, eyeballs output,
 and signs off in the closeout issue. The harness itself does not self-verify
@@ -24,12 +25,18 @@ If discovery picks the no-op test issue, an additional signal is:
 
 On the operator's laptop:
 
+- Node ≥ 24 and the harness installed globally:
+  ```sh
+  npm install -g @unimatrix27/ralph-harness@1.0.0
+  ```
+  This drops `ralph-fire`, `ralph-orchestrate`, `ralph-bootstrap-aws`,
+  `ralph-sync-credential`, `ralph-sync-github-pat`, `ralph-tail-logs`,
+  `ralph-validate-config`, and `ralph-gsm` onto your `PATH`.
 - `aws` CLI v2 authenticated against the **fresh test account**, region
   `eu-central-1`. Verify with `aws sts get-caller-identity`.
 - `gh` authenticated against an account that has push + label-write on the
   sandbox target repo. Verify with `gh auth status`.
-- `jq`, `yq` (mikefarah v4), `bats-core` installed (smoke test does not run
-  bats but the harness assumes the same toolchain).
+- `jq` installed (used by the bin entries).
 - macOS Keychain holds a valid `Claude Code-credentials` entry (run
   `claude /login` in the desktop app first).
 - A **GitHub Personal Access Token** for the harness's worker, scoped to
@@ -78,7 +85,7 @@ Expected: each `aws-bootstrap:` info line ends with `created …` on the first
 run, or `already exists` on a re-run. The CLI is idempotent — re-run if you
 are unsure of state.
 
-> Step 1 can be skipped on subsequent runs: `./bin/fire.sh` subprocesses the
+> Step 1 can be skipped on subsequent runs: `ralph-fire` subprocesses the
 > same idempotent bootstrap before launching the instance. The first run on
 > a fresh account still needs explicit step-1 because steps 2 and 3 (sync
 > credential, seed PAT) depend on the SSM parameters this step creates.
@@ -136,16 +143,22 @@ Expect `Version` ≥ 2 (initial placeholder was Version 1).
 ## Step 4 — fire one EC2
 
 ```sh
-./bin/fire.sh
+ralph-fire
 ```
+
+`ralph-fire` auto-loads `./.env` and `~/.config/ralph/.env` (already-set vars
+win), subprocesses `ralph-bootstrap-aws` for the idempotent ensure, then
+launches the worker. The user-data is now a ~15-line stub that installs
+Node 24, installs `@unimatrix27/ralph-harness@${RALPH_HARNESS_VERSION}`, and
+execs `ralph-orchestrate` (which runs the OS-level `system-setup.sh` first).
 
 Expected stdout from the launcher:
 
 ```
 fire-launcher: region=eu-central-1 vpc=vpc-… subnet=subnet-… sg=sg-… ami=ami-…
 fire-launcher: instance_type=m7a.xlarge root_gb=30 max_lifetime_min=75
-fire-launcher: target=<owner>/<sandbox-repo> log_group=/ralph/main
-fire-launcher: github_key=/ralph/github-pat oauth_key=/ralph/claude-oauth-credential
+fire-launcher: target=<owner>/<sandbox-repo> log_group=/ralph/main version=1.0.0
+fire-launcher: user-data size: <bytes> bytes (cap=16384)
 fire-launcher: launched i-…
 fire-launcher: log_group=/ralph/main log_stream=i-…
 fire-launcher: tail with: aws --region eu-central-1 logs tail /ralph/main --log-stream-names i-… --follow
@@ -155,9 +168,14 @@ Note the instance id (`i-…`) — every later step uses it. The launcher then
 blocks polling `describe-instances` until the box is `terminated`, with a
 75-minute ceiling.
 
+`RALPH_HARNESS_VERSION` defaults to the version of the `ralph-fire` binary
+you ran. To pin a different published version on the EC2 worker (rare —
+useful only for piloting an unreleased build), `export RALPH_HARNESS_VERSION=…`
+before firing.
+
 ## Step 5 — tail the per-instance CloudWatch stream
 
-Open a second terminal (`./bin/fire.sh` is still blocking in the first one):
+Open a second terminal (`ralph-fire` is still blocking in the first one):
 
 ```sh
 INSTANCE_ID=i-…    # from step 4
@@ -168,15 +186,16 @@ ralph-tail-logs "$INSTANCE_ID"
 
 Expected phase sequence (each line emits `PHASE_START …` then `PHASE_END …`):
 
-| Phase                 | Source                  |
-| --------------------- | ----------------------- |
-| `install-deps`        | cloud-init bootstrap    |
-| `fetch-secrets`       | cloud-init bootstrap    |
-| `clone-target`        | cloud-init bootstrap    |
-| `safety-guards`       | cloud-init bootstrap    |
-| `configure-mcps`      | cloud-init bootstrap    |
-| `load-config`         | cloud-init bootstrap    |
-| `discovery`           | orchestrator            |
+| Phase                 | Source                          |
+| --------------------- | ------------------------------- |
+| `cwagent`             | system-setup.sh                 |
+| `install-deps`        | system-setup.sh                 |
+| `fetch-secrets`       | system-setup.sh                 |
+| `clone-target`        | system-setup.sh                 |
+| `safety-guards`       | system-setup.sh                 |
+| `configure-mcps`      | system-setup.sh                 |
+| `validate-config`     | system-setup.sh                 |
+| `discovery`           | orchestrator                    |
 | `implementation`      | orchestrator (only on `PICKED`) |
 | `review`              | orchestrator (only on `PR_OPENED`) |
 
@@ -250,12 +269,16 @@ instance are deleted on termination; an `available` (= detached) volume tagged
 
 ## Step 9 — sign off
 
-Post a comment on the iteration-1 closeout issue (#11) recording:
+Post a comment on the iteration-2 closeout / milestone-log issue recording:
 
 - Instance id from step 4
 - Final `OUTCOME=…` line from step 5
 - PR number from step 6
 - Confirmation of empty output from both step-8 commands
+- Subscription-auth confirmation: the orchestrator's `claude --print`
+  succeeded against the OAuth credential pulled from SSM (not against an
+  API key). The marker is the absence of an `ANTHROPIC_API_KEY`-style
+  prompt at the top of the per-call output.
 
 Suggested template:
 
@@ -266,6 +289,7 @@ Smoke test passed.
 - OUTCOME: pr_opened issue=<n> pr=<m> review=none
 - PR: <url>
 - Cleanup: 0 leaked instances, 0 leaked volumes
+- Subscription auth: OK (claude --print used OAuth credential from SSM)
 ```
 
 Sign-off comment closes the HITL loop.
@@ -296,7 +320,7 @@ system / user / assistant message plus every tool_use and tool_result —
 flip the operator-side debug knob before firing:
 
 ```sh
-RALPH_DEBUG_TRANSCRIPT=1 ./bin/fire.sh
+RALPH_DEBUG_TRANSCRIPT=1 ralph-fire
 ```
 
 The launcher then exports
